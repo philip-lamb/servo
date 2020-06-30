@@ -64,3 +64,4 @@ support/hololens/.vs/
 
 # Layout debugger trace files
 layout_trace*
+**/target/
