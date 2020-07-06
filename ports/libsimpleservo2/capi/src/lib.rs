@@ -389,8 +389,6 @@ fn init_logger(_modules: &[*const c_char], _level: LevelFilter) {
 unsafe fn init(
     opts: CInitOptions,
     gl: gl_glue::ServoGl,
-    gl_context: Option<*const c_void>,
-    display: Option<*const c_void>,
     wakeup: extern "C" fn(),
     callbacks: CHostCallbacks,
 ) {
@@ -444,8 +442,6 @@ unsafe fn init(
         density: opts.density,
         xr_discovery: None,
         enable_subpixel_text_antialiasing: opts.enable_subpixel_text_antialiasing,
-        gl_context_pointer: gl_context,
-        native_display_pointer: display,
      };
 
     let wakeup = Box::new(WakeupCallback::new(wakeup));
@@ -485,7 +481,7 @@ pub extern "C" fn init_with_gl(
 ) {
     catch_any_panic(|| {
         let gl = gl_glue::gl::init().unwrap();
-        unsafe { init(opts, gl, None, None, wakeup, callbacks) }
+        unsafe { init(opts, gl, wakeup, callbacks) }
     });
 }
 
@@ -728,6 +724,14 @@ pub extern "C" fn change_visibility(visible: bool) {
     catch_any_panic(|| {
         debug!("change_visibility");
         call(|s| s.change_visibility(visible));
+    });
+}
+
+#[no_mangle]
+pub extern "C" fn fill_gl_texture(tex_id: u32, tex_width: i32, tex_height: i32) {
+    catch_any_panic(|| {
+        debug!("fill_gl_texture");
+        call(|s| s.fill_gl_texture(tex_id, tex_width, tex_height));
     });
 }
 

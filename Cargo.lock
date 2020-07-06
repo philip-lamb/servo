@@ -5223,6 +5223,8 @@ dependencies = [
  "log",
  "servo-media",
  "surfman",
+ "surfman-chains",
+ "surfman-chains-api",
  "webxr",
  "webxr-api",
  "winapi",

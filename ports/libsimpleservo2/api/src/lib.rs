@@ -40,12 +40,12 @@ use servo_media::player::context as MediaPlayerContext;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::mem;
-use std::os::raw::c_void;
 use std::path::PathBuf;
 use std::rc::Rc;
 use surfman::Adapter;
 use surfman::Connection;
 use surfman::SurfaceType;
+use surfman_chains_api::SwapChainAPI;
 
 thread_local! {
     pub static SERVO: RefCell<Option<ServoGlue>> = RefCell::new(None);
@@ -62,8 +62,6 @@ pub struct InitOptions {
     pub density: f32,
     pub xr_discovery: Option<webxr::Discovery>,
     pub enable_subpixel_text_antialiasing: bool,
-    pub gl_context_pointer: Option<*const c_void>,
-    pub native_display_pointer: Option<*const c_void>,
     pub prefs: Option<HashMap<String, PrefValue>>,
 }
 
@@ -148,6 +146,18 @@ pub trait HostTrait {
     fn on_devtools_started(&self, port: Result<u16, ()>);
 }
 
+struct ServoGfx {
+    gl: Rc<dyn gl::Gl>,
+    read_fbo: gl::GLuint,
+    draw_fbo: gl::GLuint,
+}
+
+impl Drop for ServoGfx {
+    fn drop(&mut self) {
+        self.gl.delete_framebuffers(&[self.read_fbo, self.draw_fbo]);
+     }
+}
+
 pub struct ServoGlue {
     servo: Servo<ServoWindowCallbacks>,
     batch_mode: bool,
@@ -163,6 +173,7 @@ pub struct ServoGlue {
     events: Vec<WindowEvent>,
     current_url: Option<ServoUrl>,
     context_menu_sender: Option<IpcSender<ContextMenuResult>>,
+    gfx: ServoGfx
 }
 
 pub fn servo_version() -> String {
@@ -269,8 +280,6 @@ pub fn init(
         host_callbacks: callbacks,
         coordinates: RefCell::new(init_opts.coordinates),
         density: init_opts.density,
-        gl_context_pointer: init_opts.gl_context_pointer,
-        native_display_pointer: init_opts.native_display_pointer,
         webrender_surfman,
     });
 
@@ -282,6 +291,14 @@ pub fn init(
 
     let servo = Servo::new(embedder_callbacks, window_callbacks.clone(), None);
 
+    let draw_fbo = gl.gen_framebuffers(1)[0];
+    let read_fbo = gl.gen_framebuffers(1)[0];
+    let gfx = ServoGfx {
+            gl,
+            read_fbo,
+            draw_fbo,
+    };
+
     SERVO.with(|s| {
         let mut servo_glue = ServoGlue {
             servo,
@@ -292,6 +309,7 @@ pub fn init(
             events: vec![],
             current_url: Some(url.clone()),
             context_menu_sender: None,
+            gfx,
         };
         let browser_id = BrowserId::new();
         let _ = servo_glue.process_event(WindowEvent::NewBrowser(url, browser_id));
@@ -767,6 +785,133 @@ impl ServoGlue {
         }
         Ok(())
     }
+
+    pub fn fill_gl_texture(&mut self, tex_id: u32, tex_width: i32, tex_height: i32) -> Result<(), &'static str> {
+        debug!("Filling texture {} {}x{}", tex_id, tex_width, tex_height);
+
+        self.callbacks.webrender_surfman
+            .make_gl_context_current()
+            .expect("Failed to make surfman context current");
+        debug_assert_eq!(self.gfx.gl.get_error(), gl::NO_ERROR);
+
+        // Save the current GL state
+        debug!("Saving the GL context");
+        let mut bound_fbos = [0, 0];
+        unsafe {
+            self.gfx.gl.get_integer_v(gl::DRAW_FRAMEBUFFER_BINDING, &mut bound_fbos[0..]);
+            self.gfx.gl.get_integer_v(gl::READ_FRAMEBUFFER_BINDING, &mut bound_fbos[1..]);
+        }
+
+        self.gfx.gl.bind_framebuffer(gl::FRAMEBUFFER, self.gfx.draw_fbo);
+        self.gfx.gl.framebuffer_texture_2d(
+            gl::FRAMEBUFFER,
+            gl::COLOR_ATTACHMENT0,
+            gl::TEXTURE_2D,
+            tex_id,
+            0,
+        );
+        debug_assert_eq!(self.gfx.gl.get_error(), gl::NO_ERROR);
+
+        self.gfx.gl.clear_color(0.0, 0.0, 0.0, 1.0);
+        self.gfx.gl.clear(gl::COLOR_BUFFER_BIT);
+        debug_assert_eq!(self.gfx.gl.get_error(), gl::NO_ERROR);
+
+        if let Some(surface) = self.callbacks.webrender_surfman.swap_chain().unwrap().take_surface() {
+            debug!("Rendering surface");
+            let tex_size = Size2D::new(tex_width, tex_height);
+            let surface_size = Size2D::from_untyped(self.callbacks.webrender_surfman.surface_info(&surface).size);
+            if tex_size != surface_size {
+                // If we're being asked to fill frames that are a different size than servo is providing,
+                // ask it to change size.
+                let _ = self.callbacks.webrender_surfman.resize(tex_size);
+            }
+
+            if tex_size.width <= 0 || tex_size.height <= 0 {
+                info!("Surface is zero-sized");
+                self.callbacks.webrender_surfman
+                    .swap_chain().unwrap().recycle_surface(surface);
+                return Err("Surface is zero-sized");
+            }
+
+            let surface_texture = self.callbacks.webrender_surfman
+                .create_surface_texture(surface)
+                .unwrap();
+            let read_texture_id = self.callbacks.webrender_surfman
+                .surface_texture_object(&surface_texture);
+            // webrender-surfman doesn't implement surface_gl_texture_target().
+            //let read_texture_target = self.callbacks.webrender_surfman.surface_gl_texture_target();
+            let read_texture_target = gl::TEXTURE_RECTANGLE;
+
+            debug!(
+                "Filling with {}/{} {}",
+                read_texture_id, read_texture_target, surface_size
+            );
+            self.gfx.gl.bind_framebuffer(gl::READ_FRAMEBUFFER, self.gfx.read_fbo);
+            self.gfx.gl.framebuffer_texture_2d(
+                gl::READ_FRAMEBUFFER,
+                gl::COLOR_ATTACHMENT0,
+                read_texture_target,
+                read_texture_id,
+                0,
+            );
+            self.gfx.gl.bind_framebuffer(gl::DRAW_FRAMEBUFFER, self.gfx.draw_fbo);
+            self.gfx.gl.framebuffer_texture_2d(
+                gl::DRAW_FRAMEBUFFER,
+                gl::COLOR_ATTACHMENT0,
+                gl::TEXTURE_2D,
+                tex_id,
+                0,
+            );
+            debug_assert_eq!(
+                (
+                    self.gfx.gl.check_frame_buffer_status(gl::READ_FRAMEBUFFER),
+                    self.gfx.gl.check_frame_buffer_status(gl::DRAW_FRAMEBUFFER),
+                    self.gfx.gl.get_error()
+                ),
+                (
+                    gl::FRAMEBUFFER_COMPLETE,
+                    gl::FRAMEBUFFER_COMPLETE,
+                    gl::NO_ERROR
+                )
+            );
+
+            debug!("Blitting");
+            self.gfx.gl.blit_framebuffer(
+                0,
+                0,
+                surface_size.width,
+                surface_size.height,
+                0,
+                0,
+                tex_width,
+                tex_height,
+                gl::COLOR_BUFFER_BIT,
+                gl::NEAREST,
+            );
+            debug_assert_eq!(
+                (
+                    self.gfx.gl.check_frame_buffer_status(gl::FRAMEBUFFER),
+                    self.gfx.gl.get_error()
+                ),
+                (gl::FRAMEBUFFER_COMPLETE, gl::NO_ERROR)
+            );
+
+            let surface = self.callbacks.webrender_surfman
+                .destroy_surface_texture(surface_texture)
+                .unwrap();
+            self.callbacks.webrender_surfman
+                .swap_chain().unwrap().recycle_surface(surface);
+        } else {
+            debug!("Failed to get current surface");
+        }
+
+        // Restore the GL state
+        self.gfx.gl.bind_framebuffer(gl::DRAW_FRAMEBUFFER, bound_fbos[0] as gl::GLuint);
+        self.gfx.gl.bind_framebuffer(gl::READ_FRAMEBUFFER, bound_fbos[1] as gl::GLuint);
+        debug_assert_eq!(self.gfx.gl.get_error(), gl::NO_ERROR);
+
+        Ok(())
+    }
 }
 
 struct ServoEmbedderCallbacks {
@@ -780,8 +925,6 @@ struct ServoWindowCallbacks {
     host_callbacks: Box<dyn HostTrait>,
     coordinates: RefCell<Coordinates>,
     density: f32,
-    gl_context_pointer: Option<*const c_void>,
-    native_display_pointer: Option<*const c_void>,
     webrender_surfman: WebrenderSurfman,
 }
 
