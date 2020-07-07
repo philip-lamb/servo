@@ -261,6 +261,15 @@ pub fn init(
     //let v = gl.get_string(gl::VERSION);
     //error!("gl_version {}", v);
 
+    // These need to be on the desitnation context.
+    let draw_fbo = gl.gen_framebuffers(1)[0];
+    let read_fbo = gl.gen_framebuffers(1)[0];
+    let gfx = ServoGfx {
+            gl: gl.clone(),
+            read_fbo,
+            draw_fbo,
+    };
+
     // Initialize surfman
     let connection = Connection::new().or(Err("Failed to create connection"))?;
     let adapter = match create_adapter() {
@@ -290,14 +299,6 @@ pub fn init(
     });
 
     let servo = Servo::new(embedder_callbacks, window_callbacks.clone(), None);
-
-    let draw_fbo = gl.gen_framebuffers(1)[0];
-    let read_fbo = gl.gen_framebuffers(1)[0];
-    let gfx = ServoGfx {
-            gl,
-            read_fbo,
-            draw_fbo,
-    };
 
     SERVO.with(|s| {
         let mut servo_glue = ServoGlue {
@@ -789,10 +790,10 @@ impl ServoGlue {
     pub fn fill_gl_texture(&mut self, tex_id: u32, tex_width: i32, tex_height: i32) -> Result<(), &'static str> {
         debug!("Filling texture {} {}x{}", tex_id, tex_width, tex_height);
 
-        self.callbacks.webrender_surfman
-            .make_gl_context_current()
-            .expect("Failed to make surfman context current");
-        debug_assert_eq!(self.gfx.gl.get_error(), gl::NO_ERROR);
+        // self.callbacks.webrender_surfman
+        //     .make_gl_context_current()
+        //     .expect("Failed to make surfman context current");
+        // debug_assert_eq!(self.gfx.gl.get_error(), gl::NO_ERROR);
 
         // Save the current GL state
         debug!("Saving the GL context");
