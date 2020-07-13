@@ -42,7 +42,6 @@ use std::collections::HashMap;
 use std::mem;
 use std::path::PathBuf;
 use std::rc::Rc;
-use surfman::Adapter;
 use surfman::Connection;
 use surfman::SurfaceType;
 use surfman_chains_api::SwapChainAPI;
@@ -279,12 +278,9 @@ pub fn init(
     let connection = unsafe { Connection::from_native_connection(native_connection) }
         .expect("Failed to bootstrap surfman connection");
 
-    let adapter = match create_adapter() {
-        Some(adapter) => adapter,
-        None => connection
-            .create_adapter()
-            //.create_software_adapter()
-            .or(Err("Failed to create adapter"))?,
+    let adapter = connection
+        .create_adapter()
+        .expect("Failed to bootstrap surfman adapter");
     };
     let surface_type = SurfaceType::Generic {
         size: init_opts.coordinates.framebuffer.to_untyped().to_i32(),
@@ -1171,14 +1167,4 @@ impl ResourceReaderMethods for ResourceReaderInstance {
     fn sandbox_access_files_dirs(&self) -> Vec<PathBuf> {
         vec![]
     }
-}
-
-#[cfg(feature = "uwp")]
-fn create_adapter() -> Option<Adapter> {
-    webxr::openxr::create_surfman_adapter()
-}
-
-#[cfg(not(feature = "uwp"))]
-fn create_adapter() -> Option<Adapter> {
-    None
 }
