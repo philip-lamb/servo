@@ -43,6 +43,8 @@ use std::mem;
 use std::path::PathBuf;
 use std::rc::Rc;
 use surfman::Connection;
+use surfman::Context;
+use surfman::Device;
 use surfman::SurfaceType;
 use surfman_chains_api::SwapChainAPI;
 
@@ -147,6 +149,8 @@ pub trait HostTrait {
 
 struct ServoGfx {
     gl: Rc<dyn gl::Gl>,
+    device: Device,
+    context: Context,
     read_fbo: gl::GLuint,
     draw_fbo: gl::GLuint,
 }
@@ -263,14 +267,12 @@ pub fn init(
     // These need to be on the destination context.
     let draw_fbo = gl.gen_framebuffers(1)[0];
     let read_fbo = gl.gen_framebuffers(1)[0];
-    let gfx = ServoGfx {
-            gl: gl.clone(),
-            read_fbo,
-            draw_fbo,
-    };
 
     // Initialize surfman
-    //let connection = Connection::new().or(Err("Failed to create connection"))?;
+    // If we create a connection using Connection::new(), it will allocate a new
+    // GL context, but we need a connection that is based on the current GL context,
+    // so we work backwards from the current native context via a NativeConnection, and
+    // from that back to a Connection, and from that to a Context.
     use surfman::connection::Connection as ConnectionAPI;
     type NativeConnection = <Connection as ConnectionAPI>::NativeConnection;
     let native_connection =
@@ -281,7 +283,30 @@ pub fn init(
     let adapter = connection
         .create_adapter()
         .expect("Failed to bootstrap surfman adapter");
+
+    let device = connection
+        .create_device(&adapter)
+        .expect("Failed to bootstrap surfman device");
+
+    let native_context = {
+        use surfman::device::Device as DeviceAPI;
+        type NativeContext = <Device as DeviceAPI>::NativeContext;
+        NativeContext::current().expect("Failed to bootstrap native context")
     };
+    let context = unsafe {
+        device
+            .create_context_from_native_context(native_context)
+            .expect("Failed to bootstrap surfman context")
+    };
+
+    let gfx = ServoGfx {
+        gl: gl.clone(),
+        device,
+        context,
+        read_fbo,
+        draw_fbo,
+    };
+
     let surface_type = SurfaceType::Generic {
         size: init_opts.coordinates.framebuffer.to_untyped().to_i32(),
     };
@@ -793,7 +818,7 @@ impl ServoGlue {
     pub fn fill_gl_texture(&mut self, tex_id: u32, tex_width: i32, tex_height: i32) -> Result<(), &'static str> {
         debug!("Filling texture {} {}x{}", tex_id, tex_width, tex_height);
 
-        // self.callbacks.webrender_surfman
+        // self.gfx.device
         //     .make_gl_context_current()
         //     .expect("Failed to make surfman context current");
         // debug_assert_eq!(self.gfx.gl.get_error(), gl::NO_ERROR);
@@ -861,15 +886,11 @@ impl ServoGlue {
                 return Err("Surface is zero-sized");
             }
 
-            let surface_texture = self.callbacks.webrender_surfman
-                .create_surface_texture(surface)
+            let surface_texture = self.gfx.device
+                .create_surface_texture(&mut self.gfx.context, surface)
                 .unwrap();
-            let read_texture_id = self.callbacks.webrender_surfman
-                .surface_texture_object(&surface_texture);
-            // webrender-surfman doesn't implement surface_gl_texture_target().
-            //let read_texture_target = self.callbacks.webrender_surfman.surface_gl_texture_target();
-            let read_texture_target = gl::TEXTURE_RECTANGLE; // macOS CGL.
-            //let read_texture_target = gl::TEXTURE_2D;
+            let read_texture_id = self.gfx.device.surface_texture_object(&surface_texture);
+            let read_texture_target = self.gfx.device.surface_gl_texture_target();
 
             debug!(
                 "Filling with {}/{} {}",
@@ -925,8 +946,8 @@ impl ServoGlue {
                 (gl::FRAMEBUFFER_COMPLETE, gl::NO_ERROR)
             );
 
-            let surface = self.callbacks.webrender_surfman
-                .destroy_surface_texture(surface_texture)
+            let surface = self.gfx.device
+                .destroy_surface_texture(&mut self.gfx.context, surface_texture)
                 .unwrap();
             self.callbacks.webrender_surfman
                 .swap_chain().unwrap().recycle_surface(surface);
