@@ -261,7 +261,7 @@ pub fn init(
     //let v = gl.get_string(gl::VERSION);
     //error!("gl_version {}", v);
 
-    // These need to be on the desitnation context.
+    // These need to be on the destination context.
     let draw_fbo = gl.gen_framebuffers(1)[0];
     let read_fbo = gl.gen_framebuffers(1)[0];
     let gfx = ServoGfx {
@@ -271,7 +271,14 @@ pub fn init(
     };
 
     // Initialize surfman
-    let connection = Connection::new().or(Err("Failed to create connection"))?;
+    //let connection = Connection::new().or(Err("Failed to create connection"))?;
+    use surfman::connection::Connection as ConnectionAPI;
+    type NativeConnection = <Connection as ConnectionAPI>::NativeConnection;
+    let native_connection =
+        NativeConnection::current().expect("Failed to bootstrap native connection");
+    let connection = unsafe { Connection::from_native_connection(native_connection) }
+        .expect("Failed to bootstrap surfman connection");
+
     let adapter = match create_adapter() {
         Some(adapter) => adapter,
         None => connection
@@ -813,7 +820,31 @@ impl ServoGlue {
         );
         debug_assert_eq!(self.gfx.gl.get_error(), gl::NO_ERROR);
 
-        self.gfx.gl.clear_color(0.0, 0.0, 0.0, 1.0);
+        // Do a little color-cycle until frames start.
+        unsafe {
+            static mut HUE: f32 = 0.0;
+            HUE += 3.0;
+            if HUE >= 360.0 {
+                HUE -= 360.0;
+            }
+            let (r, g, b) = {
+                let x = 1.0 - ((HUE / 60.0) % 2.0 - 1.0).abs();
+                if HUE < 60.0 {
+                    (1.0, x, 0.0)
+                } else if HUE < 120.0 {
+                    (x, 1.0, 0.0)
+                } else if HUE < 180.0 {
+                    (0.0, 1.0, x)
+                } else if HUE < 240.0 {
+                    (0.0, x, 1.0)
+                } else if HUE < 300.0 {
+                    (x, 0.0, 1.0)
+                } else {
+                    (1.0, 0.0, x)
+                }
+            };
+            self.gfx.gl.clear_color(r, g, b, 1.0);
+        }
         self.gfx.gl.clear(gl::COLOR_BUFFER_BIT);
         debug_assert_eq!(self.gfx.gl.get_error(), gl::NO_ERROR);
 
@@ -841,7 +872,8 @@ impl ServoGlue {
                 .surface_texture_object(&surface_texture);
             // webrender-surfman doesn't implement surface_gl_texture_target().
             //let read_texture_target = self.callbacks.webrender_surfman.surface_gl_texture_target();
-            let read_texture_target = gl::TEXTURE_RECTANGLE;
+            let read_texture_target = gl::TEXTURE_RECTANGLE; // macOS CGL.
+            //let read_texture_target = gl::TEXTURE_2D;
 
             debug!(
                 "Filling with {}/{} {}",
