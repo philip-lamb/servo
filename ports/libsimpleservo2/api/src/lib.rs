@@ -841,31 +841,7 @@ impl ServoGlue {
         );
         debug_assert_eq!(self.gfx.gl.get_error(), gl::NO_ERROR);
 
-        // Do a little color-cycle until frames start.
-        unsafe {
-            static mut HUE: f32 = 0.0;
-            HUE += 3.0;
-            if HUE >= 360.0 {
-                HUE -= 360.0;
-            }
-            let (r, g, b) = {
-                let x = 1.0 - ((HUE / 60.0) % 2.0 - 1.0).abs();
-                if HUE < 60.0 {
-                    (1.0, x, 0.0)
-                } else if HUE < 120.0 {
-                    (x, 1.0, 0.0)
-                } else if HUE < 180.0 {
-                    (0.0, 1.0, x)
-                } else if HUE < 240.0 {
-                    (0.0, x, 1.0)
-                } else if HUE < 300.0 {
-                    (x, 0.0, 1.0)
-                } else {
-                    (1.0, 0.0, x)
-                }
-            };
-            self.gfx.gl.clear_color(r, g, b, 1.0);
-        }
+        self.gfx.gl.clear_color(1.0, 1.0, 1.0, 1.0);
         self.gfx.gl.clear(gl::COLOR_BUFFER_BIT);
         debug_assert_eq!(self.gfx.gl.get_error(), gl::NO_ERROR);
 
