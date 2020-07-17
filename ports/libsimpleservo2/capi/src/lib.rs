@@ -19,7 +19,7 @@ use env_logger;
 use log::LevelFilter;
 use simpleservo2::{self, gl_glue, ServoGlue, SERVO};
 use simpleservo2::{
-    ContextMenuResult, Coordinates, EventLoopWaker, HostTrait, InitOptions, MediaSessionActionType,
+    ContextMenuResult, Coordinates, EventLoopWaker, HostTrait, InitOptions, Key, MediaSessionActionType,
     MediaSessionPlaybackState, MouseButton, PromptResult,
 };
 use std::ffi::{CStr, CString};
@@ -733,6 +733,58 @@ pub extern "C" fn fill_gl_texture(tex_id: u32, tex_width: i32, tex_height: i32) 
         debug!("fill_gl_texture");
         call(|s| s.fill_gl_texture(tex_id, tex_width, tex_height));
     });
+}
+
+#[repr(C)]
+#[allow(non_camel_case_types)]
+pub enum CKeyType {
+    kNone,
+    kCharacter,
+    kBackspace,
+    kDelete,
+    kEscape,
+    kShift,
+    kControl,
+    kOptionAlt,
+    kCommandWindows,
+    kEnter,
+    kTab,
+    kUpArrow,
+    kDownArrow,
+    kLeftArrow,
+    kRightArrow,
+    kHome,
+    kEnd,
+    kPageUp,
+    kPageDown,
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn key_down(
+    key_code: char,
+    key_type: CKeyType,
+) {
+    let key = match key_type {
+        CKeyType::kCharacter => Key::Character([key_code].iter().collect()),
+        CKeyType::kBackspace => Key::Backspace,
+        CKeyType::kEnter => Key::Enter,
+        _ => return,
+    };
+    let _ = call(move |s| s.key_down(key));
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn key_up(
+    key_code: char,
+    key_type: CKeyType,
+) {
+    let key = match key_type {
+        CKeyType::kCharacter => Key::Character([key_code].iter().collect()),
+        CKeyType::kBackspace => Key::Backspace,
+        CKeyType::kEnter => Key::Enter,
+        _ => return,
+    };
+    let _ = call(move |s| s.key_up(key));
 }
 
 pub struct WakeupCallback(extern "C" fn());

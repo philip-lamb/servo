@@ -12,6 +12,7 @@ pub use servo::embedder_traits::{
     ContextMenuResult, MediaSessionPlaybackState, PermissionPrompt, PermissionRequest, PromptResult,
 };
 pub use servo::script_traits::{MediaSessionActionType, MouseButton};
+pub use servo::keyboard_types::{Key};
 
 use getopts::Options;
 use ipc_channel::ipc::IpcSender;
@@ -26,7 +27,7 @@ use servo::embedder_traits::{
     EmbedderMsg, EmbedderProxy, MediaSessionEvent, PromptDefinition, PromptOrigin,
 };
 use servo::euclid::{Point2D, Rect, Scale, Size2D, Vector2D};
-use servo::keyboard_types::{Key, KeyState, KeyboardEvent};
+use servo::keyboard_types::{KeyState, KeyboardEvent};
 use servo::msg::constellation_msg::TraversalDirection;
 use servo::script_traits::{TouchEventType, TouchId};
 use servo::servo_config::opts;
