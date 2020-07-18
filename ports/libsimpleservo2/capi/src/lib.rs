@@ -742,6 +742,7 @@ pub enum CKeyType {
     kCharacter,
     kBackspace,
     kDelete,
+    kPause,
     kEscape,
     kShift,
     kControl,
@@ -753,23 +754,85 @@ pub enum CKeyType {
     kDownArrow,
     kLeftArrow,
     kRightArrow,
+    kInsert,
     kHome,
     kEnd,
     kPageUp,
     kPageDown,
+    kF1,
+    kF2,
+    kF3,
+    kF4,
+    kF5,
+    kF6,
+    kF7,
+    kF8,
+    kF9,
+    kF10,
+    kF11,
+    kF12,
+    kNumLock,
+    kCapsLock,
+    kScrollLock,
+    kAltGr,
+    kHelp,
+    kPrint,
 }
+
+fn ckeytype_to_key(key_code: char, key_type: CKeyType) -> Key {
+    match key_type {
+        CKeyType::kCharacter => Key::Character([key_code].iter().collect()),
+        CKeyType::kBackspace => Key::Backspace,
+        CKeyType::kDelete => Key::Delete,
+        CKeyType::kPause => Key::Pause,
+        CKeyType::kEscape => Key::Escape,
+        CKeyType::kShift => Key::Shift,
+        CKeyType::kControl => Key::Control,
+        CKeyType::kOptionAlt => Key::Alt,
+        CKeyType::kCommandWindows => Key::Meta,
+        CKeyType::kEnter => Key::Enter,
+        CKeyType::kTab => Key::Tab,
+        CKeyType::kUpArrow => Key::ArrowUp,
+        CKeyType::kDownArrow => Key::ArrowDown,
+        CKeyType::kLeftArrow => Key::ArrowLeft,
+        CKeyType::kRightArrow => Key::ArrowRight,
+        CKeyType::kInsert => Key::Insert,
+        CKeyType::kHome => Key::Home,
+        CKeyType::kEnd => Key::End,
+        CKeyType::kPageUp => Key::PageUp,
+        CKeyType::kPageDown => Key::PageDown,
+        CKeyType::kF1 => Key::F1,
+        CKeyType::kF2 => Key::F2,
+        CKeyType::kF3 => Key::F3,
+        CKeyType::kF4 => Key::F4,
+        CKeyType::kF5 => Key::F5,
+        CKeyType::kF6 => Key::F6,
+        CKeyType::kF7 => Key::F7,
+        CKeyType::kF8 => Key::F8,
+        CKeyType::kF9 => Key::F9,
+        CKeyType::kF10 => Key::F10,
+        CKeyType::kF11 => Key::F11,
+        CKeyType::kF12 => Key::F12,
+        CKeyType::kNumLock => Key::NumLock,
+        CKeyType::kCapsLock => Key::CapsLock,
+        CKeyType::kScrollLock => Key::ScrollLock,
+        CKeyType::kAltGr => Key::AltGraph,
+        CKeyType::kHelp => Key::Help,
+        CKeyType::kPrint => Key::PrintScreen,
+        _ => Key::Unidentified,
+    }
+}
+
 
 #[no_mangle]
 pub unsafe extern "C" fn key_down(
     key_code: char,
     key_type: CKeyType,
 ) {
-    let key = match key_type {
-        CKeyType::kCharacter => Key::Character([key_code].iter().collect()),
-        CKeyType::kBackspace => Key::Backspace,
-        CKeyType::kEnter => Key::Enter,
-        _ => return,
-    };
+    let key = ckeytype_to_key(key_code, key_type);
+    if key == Key::Unidentified {
+        return;
+    }
     let _ = call(move |s| s.key_down(key));
 }
 
@@ -778,12 +841,10 @@ pub unsafe extern "C" fn key_up(
     key_code: char,
     key_type: CKeyType,
 ) {
-    let key = match key_type {
-        CKeyType::kCharacter => Key::Character([key_code].iter().collect()),
-        CKeyType::kBackspace => Key::Backspace,
-        CKeyType::kEnter => Key::Enter,
-        _ => return,
-    };
+    let key = ckeytype_to_key(key_code, key_type);
+    if key == Key::Unidentified {
+        return;
+    }
     let _ = call(move |s| s.key_up(key));
 }
 
