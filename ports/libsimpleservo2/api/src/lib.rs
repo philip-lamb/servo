@@ -159,6 +159,7 @@ struct ServoGfx {
 impl Drop for ServoGfx {
     fn drop(&mut self) {
         self.gl.delete_framebuffers(&[self.read_fbo, self.draw_fbo]);
+        let _ = self.device.destroy_context(&mut self.context);
      }
 }
 
