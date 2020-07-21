@@ -16,7 +16,6 @@ default = []
 gl = ["gleam", "pixels"]
 
 [dependencies]
-app_units = "0.7"
 canvas = { path = "../canvas" }
 crossbeam-channel = "0.4"
 embedder_traits = { path = "../embedder_traits" }
@@ -25,7 +24,7 @@ gfx_traits = { path = "../gfx_traits" }
 gleam = { version = "0.11", optional = true }
 image = "0.23"
 ipc-channel = "0.14"
-keyboard-types = "0.4.3"
+keyboard-types = "0.5"
 libc = "0.2"
 log = "0.4"
 msg = { path = "../msg" }

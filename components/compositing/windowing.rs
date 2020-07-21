@@ -4,7 +4,6 @@
 
 //! Abstract windowing methods. The concrete implementations of these can be found in `platform/`.
 
-use canvas::{SurfaceProviders, WebGlExecutor};
 use embedder_traits::{EmbedderProxy, EventLoopWaker};
 use euclid::Scale;
 use keyboard_types::KeyboardEvent;
@@ -103,6 +102,8 @@ pub enum WindowEvent {
     MediaSessionAction(MediaSessionActionType),
     /// Set browser visibility. A hidden browser will not tick the animations.
     ChangeBrowserVisibility(TopLevelBrowsingContextId, bool),
+    /// Virtual keyboard was dismissed
+    IMEDismissed,
 }
 
 impl Debug for WindowEvent {
@@ -135,6 +136,7 @@ impl Debug for WindowEvent {
             WindowEvent::ExitFullScreen(..) => write!(f, "ExitFullScreen"),
             WindowEvent::MediaSessionAction(..) => write!(f, "MediaSessionAction"),
             WindowEvent::ChangeBrowserVisibility(..) => write!(f, "ChangeBrowserVisibility"),
+            WindowEvent::IMEDismissed => write!(f, "IMEDismissed"),
         }
     }
 }
@@ -171,14 +173,7 @@ pub trait EmbedderMethods {
     fn create_event_loop_waker(&mut self) -> Box<dyn EventLoopWaker>;
 
     /// Register services with a WebXR Registry.
-    fn register_webxr(
-        &mut self,
-        _: &mut webxr::MainThreadRegistry,
-        _: WebGlExecutor,
-        _: SurfaceProviders,
-        _: EmbedderProxy,
-    ) {
-    }
+    fn register_webxr(&mut self, _: &mut webxr::MainThreadRegistry, _: EmbedderProxy) {}
 
     /// Returns the user agent string to report in network requests.
     fn get_user_agent_string(&self) -> Option<String> {

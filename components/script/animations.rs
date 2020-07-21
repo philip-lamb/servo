@@ -19,25 +19,25 @@ use crate::dom::event::Event;
 use crate::dom::node::{from_untrusted_node_address, window_from_node, Node, NodeDamage};
 use crate::dom::transitionevent::TransitionEvent;
 use crate::dom::window::Window;
-use fxhash::FxHashMap;
+use cssparser::ToCss;
+use fxhash::{FxHashMap, FxHashSet};
 use libc::c_void;
 use msg::constellation_msg::PipelineId;
-use parking_lot::RwLock;
 use script_traits::{AnimationState as AnimationsPresentState, ScriptMsg, UntrustedNodeAddress};
-use servo_arc::Arc;
 use std::cell::Cell;
 use style::animation::{
-    Animation, AnimationState, ElementAnimationSet, KeyframesIterationState, Transition,
+    Animation, AnimationSetKey, AnimationState, DocumentAnimationSet, ElementAnimationSet,
+    KeyframesIterationState, Transition,
 };
 use style::dom::OpaqueNode;
+use style::selector_parser::PseudoElement;
 
 /// The set of animations for a document.
 #[derive(Default, JSTraceable, MallocSizeOf)]
 #[unrooted_must_root_lint::must_root]
 pub(crate) struct Animations {
     /// The map of nodes to their animation states.
-    #[ignore_malloc_size_of = "Arc is hard"]
-    pub sets: Arc<RwLock<FxHashMap<OpaqueNode, ElementAnimationSet>>>,
+    pub sets: DocumentAnimationSet,
 
     /// Whether or not we have animations that are running.
     have_running_animations: Cell<bool>,
@@ -60,30 +60,31 @@ impl Animations {
     }
 
     pub(crate) fn clear(&self) {
-        self.sets.write().clear();
+        self.sets.sets.write().clear();
         self.rooted_nodes.borrow_mut().clear();
         self.pending_events.borrow_mut().clear();
     }
 
     pub(crate) fn mark_animating_nodes_as_dirty(&self) {
-        let sets = self.sets.read();
+        let sets = self.sets.sets.read();
         let rooted_nodes = self.rooted_nodes.borrow();
-        for node in sets.keys().filter_map(|node| rooted_nodes.get(&node)) {
+        for node in sets.keys().filter_map(|key| rooted_nodes.get(&key.node)) {
             node.dirty(NodeDamage::NodeStyleDamaged);
         }
     }
 
     pub(crate) fn update_for_new_timeline_value(&self, window: &Window, now: f64) {
         let pipeline_id = window.pipeline_id();
-        let mut sets = self.sets.write();
+        let mut sets = self.sets.sets.write();
 
-        for set in sets.values_mut() {
-            self.start_pending_animations(set, now, pipeline_id);
+        for (key, set) in sets.iter_mut() {
+            self.start_pending_animations(key, set, now, pipeline_id);
 
             // When necessary, iterate our running animations to the next iteration.
             for animation in set.animations.iter_mut() {
                 if animation.iterate_if_necessary(now) {
                     self.add_animation_event(
+                        key,
                         animation,
                         TransitionOrAnimationEventType::AnimationIteration,
                         now,
@@ -92,22 +93,43 @@ impl Animations {
                 }
             }
 
-            self.finish_running_animations(set, now, pipeline_id);
+            self.finish_running_animations(key, set, now, pipeline_id);
         }
 
         self.unroot_unused_nodes(&sets);
+    }
+
+    /// Cancel animations for the given node, if any exist.
+    pub(crate) fn cancel_animations_for_node(&self, node: &Node) {
+        let mut animations = self.sets.sets.write();
+        let mut cancel_animations_for = |key| {
+            animations.get_mut(&key).map(|set| {
+                set.cancel_all_animations();
+            });
+        };
+
+        let opaque_node = node.to_opaque();
+        cancel_animations_for(AnimationSetKey::new_for_non_pseudo(opaque_node));
+        cancel_animations_for(AnimationSetKey::new_for_pseudo(
+            opaque_node,
+            PseudoElement::Before,
+        ));
+        cancel_animations_for(AnimationSetKey::new_for_pseudo(
+            opaque_node,
+            PseudoElement::After,
+        ));
     }
 
     /// Processes any new animations that were discovered after reflow. Collect messages
     /// that trigger events for any animations that changed state.
     pub(crate) fn do_post_reflow_update(&self, window: &Window, now: f64) {
         let pipeline_id = window.pipeline_id();
-        let mut sets = self.sets.write();
+        let mut sets = self.sets.sets.write();
         self.root_newly_animating_dom_nodes(&sets, window);
 
-        for set in sets.values_mut() {
-            self.handle_canceled_animations(set, now, pipeline_id);
-            self.handle_new_animations(set, now, pipeline_id);
+        for (key, set) in sets.iter_mut() {
+            self.handle_canceled_animations(key, set, now, pipeline_id);
+            self.handle_new_animations(key, set, now, pipeline_id);
         }
 
         // Remove empty states from our collection of states in order to free
@@ -136,6 +158,7 @@ impl Animations {
 
     pub(crate) fn running_animation_count(&self) -> usize {
         self.sets
+            .sets
             .read()
             .values()
             .map(|state| state.running_animation_and_transition_count())
@@ -146,6 +169,7 @@ impl Animations {
     /// have left the delay phase.
     fn start_pending_animations(
         &self,
+        key: &AnimationSetKey,
         set: &mut ElementAnimationSet,
         now: f64,
         pipeline_id: PipelineId,
@@ -154,6 +178,7 @@ impl Animations {
             if animation.state == AnimationState::Pending && animation.started_at <= now {
                 animation.state = AnimationState::Running;
                 self.add_animation_event(
+                    key,
                     animation,
                     TransitionOrAnimationEventType::AnimationStart,
                     now,
@@ -166,6 +191,7 @@ impl Animations {
             if transition.state == AnimationState::Pending && transition.start_time <= now {
                 transition.state = AnimationState::Running;
                 self.add_transition_event(
+                    key,
                     transition,
                     TransitionOrAnimationEventType::TransitionStart,
                     now,
@@ -179,6 +205,7 @@ impl Animations {
     /// have ended.
     fn finish_running_animations(
         &self,
+        key: &AnimationSetKey,
         set: &mut ElementAnimationSet,
         now: f64,
         pipeline_id: PipelineId,
@@ -187,6 +214,7 @@ impl Animations {
             if animation.state == AnimationState::Running && animation.has_ended(now) {
                 animation.state = AnimationState::Finished;
                 self.add_animation_event(
+                    key,
                     animation,
                     TransitionOrAnimationEventType::AnimationEnd,
                     now,
@@ -199,6 +227,7 @@ impl Animations {
             if transition.state == AnimationState::Running && transition.has_ended(now) {
                 transition.state = AnimationState::Finished;
                 self.add_transition_event(
+                    key,
                     transition,
                     TransitionOrAnimationEventType::TransitionEnd,
                     now,
@@ -213,6 +242,7 @@ impl Animations {
     /// well.
     fn handle_canceled_animations(
         &self,
+        key: &AnimationSetKey,
         set: &mut ElementAnimationSet,
         now: f64,
         pipeline_id: PipelineId,
@@ -220,6 +250,7 @@ impl Animations {
         for transition in &set.transitions {
             if transition.state == AnimationState::Canceled {
                 self.add_transition_event(
+                    key,
                     transition,
                     TransitionOrAnimationEventType::TransitionCancel,
                     now,
@@ -231,6 +262,7 @@ impl Animations {
         for animation in &set.animations {
             if animation.state == AnimationState::Canceled {
                 self.add_animation_event(
+                    key,
                     animation,
                     TransitionOrAnimationEventType::AnimationCancel,
                     now,
@@ -244,6 +276,7 @@ impl Animations {
 
     fn handle_new_animations(
         &self,
+        key: &AnimationSetKey,
         set: &mut ElementAnimationSet,
         now: f64,
         pipeline_id: PipelineId,
@@ -255,6 +288,7 @@ impl Animations {
         for transition in set.transitions.iter_mut() {
             if transition.is_new {
                 self.add_transition_event(
+                    key,
                     transition,
                     TransitionOrAnimationEventType::TransitionRun,
                     now,
@@ -270,13 +304,14 @@ impl Animations {
     #[allow(unsafe_code)]
     fn root_newly_animating_dom_nodes(
         &self,
-        sets: &FxHashMap<OpaqueNode, ElementAnimationSet>,
+        sets: &FxHashMap<AnimationSetKey, ElementAnimationSet>,
         window: &Window,
     ) {
         let js_runtime = window.get_js_runtime().as_ref().unwrap().rt();
         let mut rooted_nodes = self.rooted_nodes.borrow_mut();
-        for (opaque_node, set) in sets.iter() {
-            if rooted_nodes.contains_key(opaque_node) {
+        for (key, set) in sets.iter() {
+            let opaque_node = key.node;
+            if rooted_nodes.contains_key(&opaque_node) {
                 continue;
             }
 
@@ -286,7 +321,7 @@ impl Animations {
                 let address = UntrustedNodeAddress(opaque_node.0 as *const c_void);
                 unsafe {
                     rooted_nodes.insert(
-                        opaque_node.clone(),
+                        opaque_node,
                         Dom::from_ref(&*from_untrusted_node_address(js_runtime, address)),
                     )
                 };
@@ -295,15 +330,17 @@ impl Animations {
     }
 
     // Unroot any nodes that we have rooted but are no longer tracking animations for.
-    fn unroot_unused_nodes(&self, sets: &FxHashMap<OpaqueNode, ElementAnimationSet>) {
+    fn unroot_unused_nodes(&self, sets: &FxHashMap<AnimationSetKey, ElementAnimationSet>) {
         let pending_events = self.pending_events.borrow();
-        self.rooted_nodes.borrow_mut().retain(|key, _| {
-            sets.contains_key(key) || pending_events.iter().any(|event| event.node == *key)
+        let nodes: FxHashSet<OpaqueNode> = sets.keys().map(|key| key.node).collect();
+        self.rooted_nodes.borrow_mut().retain(|node, _| {
+            nodes.contains(&node) || pending_events.iter().any(|event| event.node == *node)
         });
     }
 
     fn add_transition_event(
         &self,
+        key: &AnimationSetKey,
         transition: &Transition,
         event_type: TransitionOrAnimationEventType,
         now: f64,
@@ -330,7 +367,8 @@ impl Animations {
             .push(TransitionOrAnimationEvent {
                 pipeline_id,
                 event_type,
-                node: transition.node.clone(),
+                node: key.node,
+                pseudo_element: key.pseudo_element.clone(),
                 property_or_animation_name: transition
                     .property_animation
                     .property_id()
@@ -342,12 +380,13 @@ impl Animations {
 
     fn add_animation_event(
         &self,
+        key: &AnimationSetKey,
         animation: &Animation,
         event_type: TransitionOrAnimationEventType,
         now: f64,
         pipeline_id: PipelineId,
     ) {
-        let num_iterations = match animation.iteration_state {
+        let iteration_index = match animation.iteration_state {
             KeyframesIterationState::Finite(current, _) |
             KeyframesIterationState::Infinite(current) => current,
         };
@@ -363,10 +402,14 @@ impl Animations {
             TransitionOrAnimationEventType::AnimationStart => {
                 (-animation.delay).max(0.).min(active_duration)
             },
-            TransitionOrAnimationEventType::AnimationIteration |
-            TransitionOrAnimationEventType::AnimationEnd => num_iterations * animation.duration,
+            TransitionOrAnimationEventType::AnimationIteration => {
+                iteration_index * animation.duration
+            },
+            TransitionOrAnimationEventType::AnimationEnd => {
+                (iteration_index * animation.duration) + animation.current_iteration_duration()
+            },
             TransitionOrAnimationEventType::AnimationCancel => {
-                (num_iterations * animation.duration) + (now - animation.started_at).max(0.)
+                (iteration_index * animation.duration) + (now - animation.started_at).max(0.)
             },
             _ => unreachable!(),
         }
@@ -377,7 +420,8 @@ impl Animations {
             .push(TransitionOrAnimationEvent {
                 pipeline_id,
                 event_type,
-                node: animation.node.clone(),
+                node: key.node,
+                pseudo_element: key.pseudo_element.clone(),
                 property_or_animation_name: animation.name.to_string(),
                 elapsed_time,
             });
@@ -414,9 +458,13 @@ impl Animations {
                 cancelable: false,
             };
 
-            // TODO: Handle pseudo-elements properly
             let property_or_animation_name =
                 DOMString::from(event.property_or_animation_name.clone());
+            let pseudo_element = event
+                .pseudo_element
+                .map_or_else(DOMString::new, |pseudo_element| {
+                    DOMString::from(pseudo_element.to_css_string())
+                });
             let elapsed_time = Finite::new(event.elapsed_time as f32).unwrap();
             let window = window_from_node(&*node);
 
@@ -425,7 +473,7 @@ impl Animations {
                     parent,
                     propertyName: property_or_animation_name,
                     elapsedTime: elapsed_time,
-                    pseudoElement: DOMString::new(),
+                    pseudoElement: pseudo_element,
                 };
                 TransitionEvent::new(&window, event_atom, &event_init)
                     .upcast::<Event>()
@@ -435,7 +483,7 @@ impl Animations {
                     parent,
                     animationName: property_or_animation_name,
                     elapsedTime: elapsed_time,
-                    pseudoElement: DOMString::new(),
+                    pseudoElement: pseudo_element,
                 };
                 AnimationEvent::new(&window, event_atom, &event_init)
                     .upcast::<Event>()
@@ -498,6 +546,8 @@ pub struct TransitionOrAnimationEvent {
     pub event_type: TransitionOrAnimationEventType,
     /// The address of the node which owns this transition.
     pub node: OpaqueNode,
+    /// The pseudo element for this transition or animation, if applicable.
+    pub pseudo_element: Option<PseudoElement>,
     /// The name of the property that is transitioning (in the case of a transition)
     /// or the name of the animation (in the case of an animation).
     pub property_or_animation_name: String,

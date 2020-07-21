@@ -16,11 +16,12 @@ mod vslogger;
 use backtrace::Backtrace;
 #[cfg(not(target_os = "windows"))]
 use env_logger;
+use keyboard_types::Key;
 use log::LevelFilter;
 use simpleservo::{self, gl_glue, ServoGlue, SERVO};
 use simpleservo::{
-    ContextMenuResult, Coordinates, EventLoopWaker, HostTrait, InitOptions, MediaSessionActionType,
-    MediaSessionPlaybackState, MouseButton, PromptResult,
+    ContextMenuResult, Coordinates, DeviceIntRect, EventLoopWaker, HostTrait, InitOptions,
+    InputMethodType, MediaSessionActionType, MediaSessionPlaybackState, MouseButton, PromptResult,
 };
 use std::ffi::{CStr, CString};
 #[cfg(target_os = "windows")]
@@ -211,7 +212,8 @@ pub struct CHostCallbacks {
     pub on_history_changed: extern "C" fn(can_go_back: bool, can_go_forward: bool),
     pub on_animating_changed: extern "C" fn(animating: bool),
     pub on_shutdown_complete: extern "C" fn(),
-    pub on_ime_state_changed: extern "C" fn(show: bool),
+    pub on_ime_show: extern "C" fn(text: *const c_char, x: i32, y: i32, width: i32, height: i32),
+    pub on_ime_hide: extern "C" fn(),
     pub get_clipboard_contents: extern "C" fn() -> *const c_char,
     pub set_clipboard_contents: extern "C" fn(contents: *const c_char),
     pub on_media_session_metadata:
@@ -227,7 +229,8 @@ pub struct CHostCallbacks {
         default: *const c_char,
         trusted: bool,
     ) -> *const c_char,
-    pub on_devtools_started: extern "C" fn(result: CDevtoolsServerState, port: c_uint),
+    pub on_devtools_started:
+        extern "C" fn(result: CDevtoolsServerState, port: c_uint, token: *const c_char),
     pub show_context_menu:
         extern "C" fn(title: *const c_char, items_list: *const *const c_char, items_size: u32),
     pub on_log_output: extern "C" fn(buffer: *const c_char, buffer_length: u32),
@@ -717,6 +720,37 @@ pub extern "C" fn click(x: f32, y: f32) {
 }
 
 #[no_mangle]
+pub extern "C" fn key_down(name: *const c_char) {
+    debug!("key_up");
+    key_event(name, false);
+}
+
+#[no_mangle]
+pub extern "C" fn key_up(name: *const c_char) {
+    debug!("key_up");
+    key_event(name, true);
+}
+
+fn key_event(name: *const c_char, up: bool) {
+    catch_any_panic(|| {
+        let name = unsafe { CStr::from_ptr(name) };
+        let name = match name.to_str() {
+            Ok(name) => name,
+            Err(..) => {
+                warn!("Couldn't not read str");
+                return;
+            },
+        };
+        let key = Key::from_str(&name);
+        if let Ok(key) = key {
+            call(|s| if up { s.key_up(key) } else { s.key_down(key) });
+        } else {
+            warn!("Received unknown keys");
+        }
+    });
+}
+
+#[no_mangle]
 pub extern "C" fn media_session_action(action: CMediaSessionActionType) {
     catch_any_panic(|| {
         debug!("media_session_action");
@@ -729,6 +763,14 @@ pub extern "C" fn change_visibility(visible: bool) {
     catch_any_panic(|| {
         debug!("change_visibility");
         call(|s| s.change_visibility(visible));
+    });
+}
+
+#[no_mangle]
+pub extern "C" fn ime_dismissed() {
+    catch_any_panic(|| {
+        debug!("ime_dismissed");
+        call(|s| s.ime_dismissed());
     });
 }
 
@@ -801,9 +843,30 @@ impl HostTrait for HostCallbacks {
         (self.0.on_shutdown_complete)();
     }
 
-    fn on_ime_state_changed(&self, show: bool) {
-        debug!("on_ime_state_changed");
-        (self.0.on_ime_state_changed)(show);
+    fn on_ime_show(
+        &self,
+        _input_type: InputMethodType,
+        text: Option<String>,
+        bounds: DeviceIntRect,
+    ) {
+        debug!("on_ime_show");
+        let text = text.and_then(|s| CString::new(s).ok());
+        let text_ptr = text
+            .as_ref()
+            .map(|cstr| cstr.as_ptr())
+            .unwrap_or(std::ptr::null());
+        (self.0.on_ime_show)(
+            text_ptr,
+            bounds.origin.x,
+            bounds.origin.y,
+            bounds.size.width,
+            bounds.size.height,
+        );
+    }
+
+    fn on_ime_hide(&self) {
+        debug!("on_ime_hide");
+        (self.0.on_ime_hide)();
     }
 
     fn get_clipboard_contents(&self) -> Option<String> {
@@ -883,15 +946,20 @@ impl HostTrait for HostCallbacks {
         Some(contents_str.to_owned())
     }
 
-    fn on_devtools_started(&self, port: Result<u16, ()>) {
+    fn on_devtools_started(&self, port: Result<u16, ()>, token: String) {
+        let token = CString::new(token).expect("Can't create string");
         match port {
             Ok(p) => {
                 info!("Devtools Server running on port {}", p);
-                (self.0.on_devtools_started)(CDevtoolsServerState::Started, p.into());
+                (self.0.on_devtools_started)(
+                    CDevtoolsServerState::Started,
+                    p.into(),
+                    token.as_ptr(),
+                );
             },
             Err(()) => {
                 error!("Error running devtools server");
-                (self.0.on_devtools_started)(CDevtoolsServerState::Error, 0);
+                (self.0.on_devtools_started)(CDevtoolsServerState::Error, 0, token.as_ptr());
             },
         }
     }

@@ -451,6 +451,7 @@ where
             HTMLCanvasDataSource::Image(ipc_sender) => {
                 CanvasSource::Image(ipc_sender.map(|renderer| Arc::new(Mutex::new(renderer))))
             },
+            HTMLCanvasDataSource::WebGPU(image_key) => CanvasSource::WebGPU(image_key),
         };
         Some((
             CanvasInfo {
@@ -511,7 +512,7 @@ where
     }
 
     fn unset_all_boxes(self) {
-        let mut data = self.layout_data_mut();
+        let data = self.layout_data_mut();
         *data.self_box.borrow_mut() = None;
         *data.pseudo_before_box.borrow_mut() = None;
         *data.pseudo_after_box.borrow_mut() = None;

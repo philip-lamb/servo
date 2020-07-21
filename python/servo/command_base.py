@@ -131,17 +131,17 @@ def archive_deterministically(dir_to_archive, dest_archive, prepend_path=None):
 
 
 def normalize_env(env):
-    # There is a bug in subprocess where it doesn't like unicode types in
+    # There is a bug in Py2 subprocess where it doesn't like unicode types in
     # environment variables. Here, ensure all unicode are converted to
-    # binary. utf-8 is our globally assumed default. If the caller doesn't
-    # want UTF-8, they shouldn't pass in a unicode instance.
+    # native string type. utf-8 is our globally assumed default. If the caller
+    # doesn't want UTF-8, they shouldn't pass in a unicode instance.
     normalized_env = {}
     for k, v in env.items():
         if isinstance(k, six.text_type):
-            k = k.encode('utf-8', 'strict')
+            k = six.ensure_str(k, 'utf-8', 'strict')
 
         if isinstance(v, six.text_type):
-            v = v.encode('utf-8', 'strict')
+            v = six.ensure_str(v, 'utf-8', 'strict')
 
         normalized_env[k] = v
 
@@ -216,7 +216,7 @@ def is_linux():
 def append_to_path_env(string, env, name):
     variable = ""
     if name in env:
-        variable = env[name]
+        variable = six.ensure_str(env[name])
         if len(variable) > 0:
             variable += os.pathsep
     variable += string
@@ -304,6 +304,7 @@ class CommandBase(object):
         self.config["build"].setdefault("debug-assertions", False)
         self.config["build"].setdefault("debug-mozjs", False)
         self.config["build"].setdefault("layout-2020", False)
+        self.config["build"].setdefault("media-stack", "auto")
         self.config["build"].setdefault("ccache", "")
         self.config["build"].setdefault("rustflags", "")
         self.config["build"].setdefault("incremental", None)
@@ -487,7 +488,7 @@ class CommandBase(object):
             print("Could not fetch the available nightly versions from the repository : {}".format(
                 e.reason))
             sys.exit(1)
-        except AttributeError as e:
+        except AttributeError:
             print("Could not fetch a nightly version for date {} and platform {}".format(
                 nightly_date, os_prefix))
             sys.exit(1)
@@ -517,8 +518,8 @@ class CommandBase(object):
         else:
             print("The nightly {} does not exist yet, downloading it.".format(
                 destination_file))
-            download_file(destination_file, NIGHTLY_REPOSITORY_URL +
-                          file_to_download, destination_file)
+            download_file(destination_file, NIGHTLY_REPOSITORY_URL
+                          + file_to_download, destination_file)
 
         # Extract the downloaded nightly version
         if os.path.isdir(destination_folder):
@@ -537,7 +538,7 @@ class CommandBase(object):
         try:
             if check_gstreamer_lib():
                 return False
-        except:
+        except Exception:
             # Some systems don't have pkg-config; we can't probe in this case
             # and must hope for the best
             return False
@@ -552,7 +553,7 @@ class CommandBase(object):
                 raise Exception("Your system's gstreamer libraries are out of date \
 (we need at least 1.16). Please run ./mach bootstrap-gstreamer")
         else:
-                raise Exception("Your system's gstreamer libraries are out of date \
+            raise Exception("Your system's gstreamer libraries are out of date \
 (we need at least 1.16). If you're unable to \
 install them, let us know by filing a bug!")
         return False
@@ -856,11 +857,13 @@ install them, let us know by filing a bug!")
 
     # A guess about which platforms should use the gstreamer media stack
     def pick_media_stack(self, media_stack, target):
-        if not(media_stack):
-            if (
-                    not(target) or
-                    ("armv7" in target and "android" in target) or
-                    ("x86_64" in target)
+        if not media_stack:
+            if self.config["build"]["media-stack"] != "auto":
+                media_stack = self.config["build"]["media-stack"]
+            elif (
+                not target
+                or ("armv7" in target and "android" in target)
+                or "x86_64" in target
             ):
                 media_stack = "gstreamer"
             else:
@@ -1032,7 +1035,7 @@ install them, let us know by filing a bug!")
                 print()
                 sys.exit(1)
             raise
-        version = tuple(map(int, re.match(b"rustup (\d+)\.(\d+)\.(\d+)", version_line).groups()))
+        version = tuple(map(int, re.match(br"rustup (\d+)\.(\d+)\.(\d+)", version_line).groups()))
         version_needed = (1, 21, 0)
         if version < version_needed:
             print("rustup is at version %s.%s.%s, Servo requires %s.%s.%s or more recent." % (version + version_needed))
@@ -1069,8 +1072,8 @@ install them, let us know by filing a bug!")
 
 def find_highest_msvc_version_ext():
     def vswhere(args):
-        program_files = (os.environ.get('PROGRAMFILES(X86)') or
-                         os.environ.get('PROGRAMFILES'))
+        program_files = (os.environ.get('PROGRAMFILES(X86)')
+                         or os.environ.get('PROGRAMFILES'))
         if not program_files:
             return []
         vswhere = os.path.join(program_files, 'Microsoft Visual Studio',
@@ -1107,8 +1110,8 @@ def find_highest_msvc_version():
 
     versions = sorted(find_highest_msvc_version_ext(), key=lambda tup: float(tup[1]))
     if not versions:
-        print("Can't find MSBuild.exe installation under %s. Please set the VSINSTALLDIR and VisualStudioVersion" +
-              " environment variables" % base_vs_path)
+        print("Can't find MSBuild.exe installation under %s. Please set the VSINSTALLDIR and VisualStudioVersion"
+              + " environment variables" % base_vs_path)
         sys.exit(1)
     return versions[0]
 

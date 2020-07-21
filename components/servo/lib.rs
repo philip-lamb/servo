@@ -65,7 +65,7 @@ fn webdriver(_port: u16, _constellation: Sender<ConstellationMsg>) {}
 use bluetooth::BluetoothThreadFactory;
 use bluetooth_traits::BluetoothRequest;
 use canvas::canvas_paint_thread::{self, CanvasPaintThread};
-use canvas::{SurfaceProviders, WebGLComm, WebGlExecutor};
+use canvas::WebGLComm;
 use canvas_traits::webgl::WebGLThreads;
 use compositing::compositor_thread::{
     CompositorProxy, CompositorReceiver, InitialCompositorState, Msg, WebrenderCanvasMsg,
@@ -115,14 +115,16 @@ use servo_media::player::context::GlContext;
 use servo_media::ServoMedia;
 use std::borrow::Cow;
 use std::cmp::max;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::Mutex;
 use surfman::GLApi;
 use webrender::ShaderPrecacheFlags;
-use webrender_surfman::WebrenderSurfman;
+use webrender_traits::WebrenderExternalImageHandlers;
+use webrender_traits::WebrenderExternalImageRegistry;
 use webrender_traits::WebrenderImageHandlerType;
-use webrender_traits::{WebrenderExternalImageHandlers, WebrenderExternalImageRegistry};
 
 pub use gleam::gl;
 pub use keyboard_types;
@@ -132,10 +134,15 @@ pub use servo_url as url;
 
 #[cfg(feature = "media-gstreamer")]
 mod media_platform {
+    #[cfg(any(windows, target_os = "macos"))]
+    mod gstreamer_plugins {
+        include!(concat!(env!("OUT_DIR"), "/gstreamer_plugins.rs"));
+    }
+
     use super::ServoMedia;
     use servo_media_gstreamer::GStreamerBackend;
 
-    #[cfg(target_os = "windows")]
+    #[cfg(feature = "uwp")]
     fn set_gstreamer_log_handler() {
         use gstreamer::{debug_add_log_function, debug_remove_default_log_function, DebugLevel};
 
@@ -163,7 +170,7 @@ mod media_platform {
         });
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     pub fn init() {
         // UWP apps have the working directory set appropriately. Win32 apps
         // do not and need some assistance finding the DLLs.
@@ -175,66 +182,24 @@ mod media_platform {
             plugin_dir
         };
 
-        let uwp_plugins = [
-            "gstapp.dll",
-            "gstaudioconvert.dll",
-            "gstaudiofx.dll",
-            "gstaudioparsers.dll",
-            "gstaudioresample.dll",
-            "gstautodetect.dll",
-            "gstcoreelements.dll",
-            "gstdeinterlace.dll",
-            "gstinterleave.dll",
-            "gstisomp4.dll",
-            "gstlibav.dll",
-            "gstplayback.dll",
-            "gstproxy.dll",
-            "gsttypefindfunctions.dll",
-            "gstvideoconvert.dll",
-            "gstvideofilter.dll",
-            "gstvideoparsersbad.dll",
-            "gstvideoscale.dll",
-            "gstvolume.dll",
-            "gstwasapi.dll",
-        ];
-
-        let non_uwp_plugins = [
-            "gstmatroska.dll",
-            "gstnice.dll",
-            "gstogg.dll",
-            "gstopengl.dll",
-            "gstopus.dll",
-            "gstrtp.dll",
-            "gsttheora.dll",
-            "gstvorbis.dll",
-            "gstvpx.dll",
-            "gstwebrtc.dll",
-        ];
-
-        let plugins: Vec<_> = if cfg!(feature = "uwp") {
-            uwp_plugins.to_vec()
-        } else {
-            uwp_plugins
-                .iter()
-                .map(|&s| s)
-                .chain(non_uwp_plugins.iter().map(|&s| s))
-                .collect()
-        };
-
-        let backend = match GStreamerBackend::init_with_plugins(plugin_dir, &plugins) {
+        let backend = match GStreamerBackend::init_with_plugins(
+            plugin_dir,
+            &gstreamer_plugins::GSTREAMER_PLUGINS,
+        ) {
             Ok(b) => b,
             Err(e) => {
-                error!("Error initializing GStreamer: {:?}", e);
-                panic!()
+                eprintln!("Error initializing GStreamer: {:?}", e);
+                std::process::exit(1);
             },
         };
         ServoMedia::init_with_backend(backend);
-        if cfg!(feature = "uwp") {
+        #[cfg(feature = "uwp")]
+        {
             set_gstreamer_log_handler();
         }
     }
 
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     pub fn init() {
         ServoMedia::init::<GStreamerBackend>();
     }
@@ -445,43 +410,62 @@ where
             None
         };
 
+        // Create the webgl thread
+        let gl_type = match webrender_gl.get_type() {
+            gleam::gl::GlType::Gl => sparkle::gl::GlType::Gl,
+            gleam::gl::GlType::Gles => sparkle::gl::GlType::Gles,
+        };
+
         let (external_image_handlers, external_images) = WebrenderExternalImageHandlers::new();
         let mut external_image_handlers = Box::new(external_image_handlers);
 
-        let mut webxr_main_thread = webxr::MainThreadRegistry::new(event_loop_waker)
-            .expect("Failed to create WebXR device registry");
-
-        let (webgl_threads, webgl_extras) = create_webgl_threads(
+        let WebGLComm {
+            webgl_threads,
+            webxr_layer_grand_manager,
+            image_handler,
+            output_handler,
+        } = WebGLComm::new(
             webrender_surfman.clone(),
             webrender_gl.clone(),
-            &mut webrender,
             webrender_api.create_sender(),
             webrender_document,
-            &mut webxr_main_thread,
-            &mut external_image_handlers,
             external_images.clone(),
+            gl_type,
         );
 
+        // Set webrender external image handler for WebGL textures
+        external_image_handlers.set_handler(image_handler, WebrenderImageHandlerType::WebGL);
+
+        // Set DOM to texture handler, if enabled.
+        if let Some(output_handler) = output_handler {
+            webrender.set_output_image_handler(output_handler);
+        }
+
+        // Create the WebXR main thread
+        let mut webxr_main_thread =
+            webxr::MainThreadRegistry::new(event_loop_waker, webxr_layer_grand_manager)
+                .expect("Failed to create WebXR device registry");
         if pref!(dom.webxr.enabled) {
-            if let Some((webxr_surface_providers, webgl_executor)) = webgl_extras {
-                embedder.register_webxr(
-                    &mut webxr_main_thread,
-                    webgl_executor,
-                    webxr_surface_providers,
-                    embedder_proxy.clone(),
-                );
-            }
+            embedder.register_webxr(&mut webxr_main_thread, embedder_proxy.clone());
         }
 
         let glplayer_threads = match window.get_gl_context() {
             GlContext::Unknown => None,
             _ => {
-                let (glplayer_threads, image_handler) = GLPlayerThreads::new(external_images);
+                let (glplayer_threads, image_handler) =
+                    GLPlayerThreads::new(external_images.clone());
                 external_image_handlers
                     .set_handler(image_handler, WebrenderImageHandlerType::Media);
                 Some(glplayer_threads)
             },
         };
+
+        let wgpu_image_handler = webgpu::WGPUExternalImages::new();
+        let wgpu_image_map = wgpu_image_handler.images.clone();
+        external_image_handlers.set_handler(
+            Box::new(wgpu_image_handler),
+            WebrenderImageHandlerType::WebGPU,
+        );
 
         let player_context = WindowGLContext {
             gl_context: window.get_gl_context(),
@@ -514,12 +498,15 @@ where
             debugger_chan,
             devtools_chan,
             webrender_document,
+            webrender_api_sender,
             webxr_main_thread.registry(),
             player_context,
-            webgl_threads,
+            Some(webgl_threads),
             glplayer_threads,
             event_loop_waker,
             window_size,
+            external_images,
+            wgpu_image_map,
         );
 
         if cfg!(feature = "webdriver") {
@@ -636,6 +623,16 @@ where
                 let msg = ConstellationMsg::Keyboard(key_event);
                 if let Err(e) = self.constellation_chan.send(msg) {
                     warn!("Sending keyboard event to constellation failed ({:?}).", e);
+                }
+            },
+
+            WindowEvent::IMEDismissed => {
+                let msg = ConstellationMsg::IMEDismissed;
+                if let Err(e) = self.constellation_chan.send(msg) {
+                    warn!(
+                        "Sending IMEDismissed event to constellation failed ({:?}).",
+                        e
+                    );
                 }
             },
 
@@ -851,12 +848,15 @@ fn create_constellation(
     debugger_chan: Option<debugger::Sender>,
     devtools_chan: Option<Sender<devtools_traits::DevtoolsControlMsg>>,
     webrender_document: webrender_api::DocumentId,
+    webrender_api_sender: webrender_api::RenderApiSender,
     webxr_registry: webxr_api::Registry,
     player_context: WindowGLContext,
     webgl_threads: Option<WebGLThreads>,
     glplayer_threads: Option<GLPlayerThreads>,
     event_loop_waker: Option<Box<dyn EventLoopWaker>>,
     initial_window_size: WindowSizeData,
+    external_images: Arc<Mutex<WebrenderExternalImageRegistry>>,
+    wgpu_image_map: Arc<Mutex<HashMap<u64, webgpu::PresentationData>>>,
 ) -> Sender<ConstellationMsg> {
     // Global configuration options, parsed from the command line.
     let opts = opts::get();
@@ -879,8 +879,13 @@ fn create_constellation(
         Box::new(FontCacheWR(compositor_proxy.clone())),
     );
 
+    let (canvas_chan, ipc_canvas_chan) = CanvasPaintThread::start(
+        Box::new(CanvasWebrenderApi(compositor_proxy.clone())),
+        font_cache_thread.clone(),
+    );
+
     let initial_state = InitialConstellationState {
-        compositor_proxy: compositor_proxy.clone(),
+        compositor_proxy,
         embedder_proxy,
         debugger_chan,
         devtools_chan,
@@ -891,16 +896,16 @@ fn create_constellation(
         time_profiler_chan,
         mem_profiler_chan,
         webrender_document,
+        webrender_api_sender,
         webxr_registry,
         webgl_threads,
         glplayer_threads,
         player_context,
         event_loop_waker,
         user_agent,
+        webrender_external_images: external_images,
+        wgpu_image_map,
     };
-
-    let (canvas_chan, ipc_canvas_chan) =
-        CanvasPaintThread::start(Box::new(CanvasWebrenderApi(compositor_proxy)));
 
     let constellation_chan = Constellation::<
         script_layout_interface::message::Msg,
@@ -928,7 +933,7 @@ impl gfx_traits::WebrenderApi for FontCacheWR {
     fn add_font_instance(
         &self,
         font_key: webrender_api::FontKey,
-        size: app_units::Au,
+        size: f32,
     ) -> webrender_api::FontInstanceKey {
         let (sender, receiver) = unbounded();
         let _ = self.0.send(Msg::Webrender(WebrenderMsg::Font(
@@ -949,12 +954,12 @@ impl gfx_traits::WebrenderApi for FontCacheWR {
 struct CanvasWebrenderApi(CompositorProxy);
 
 impl canvas_paint_thread::WebrenderApi for CanvasWebrenderApi {
-    fn generate_key(&self) -> webrender_api::ImageKey {
+    fn generate_key(&self) -> Result<webrender_api::ImageKey, ()> {
         let (sender, receiver) = unbounded();
         let _ = self.0.send(Msg::Webrender(WebrenderMsg::Canvas(
             WebrenderCanvasMsg::GenerateKey(sender),
         )));
-        receiver.recv().unwrap()
+        receiver.recv().map_err(|_| ())
     }
     fn update_images(&self, updates: Vec<canvas_paint_thread::ImageUpdate>) {
         let _ = self.0.send(Msg::Webrender(WebrenderMsg::Canvas(
@@ -1031,11 +1036,7 @@ pub fn run_content_process(token: String) {
 
             set_logger(content.script_to_constellation_chan().clone());
 
-            let background_hang_monitor_register = if opts::get().background_hang_monitor {
-                content.register_with_background_hang_monitor()
-            } else {
-                None
-            };
+            let background_hang_monitor_register = content.register_with_background_hang_monitor();
 
             content.start_all::<script_layout_interface::message::Msg,
                                              layout_thread::LayoutThread,
@@ -1073,58 +1074,6 @@ fn create_sandbox() {
 ))]
 fn create_sandbox() {
     panic!("Sandboxing is not supported on Windows, iOS, ARM targets and android.");
-}
-
-// Initializes the WebGL thread.
-fn create_webgl_threads(
-    webrender_surfman: WebrenderSurfman,
-    webrender_gl: Rc<dyn gl::Gl>,
-    webrender: &mut webrender::Renderer,
-    webrender_api_sender: webrender_api::RenderApiSender,
-    webrender_doc: webrender_api::DocumentId,
-    webxr_main_thread: &mut webxr::MainThreadRegistry,
-    external_image_handlers: &mut WebrenderExternalImageHandlers,
-    external_images: Arc<Mutex<WebrenderExternalImageRegistry>>,
-) -> (
-    Option<WebGLThreads>,
-    Option<(SurfaceProviders, WebGlExecutor)>,
-) {
-    let gl_type = match webrender_gl.get_type() {
-        gleam::gl::GlType::Gl => sparkle::gl::GlType::Gl,
-        gleam::gl::GlType::Gles => sparkle::gl::GlType::Gles,
-    };
-
-    let WebGLComm {
-        webgl_threads,
-        webxr_swap_chains,
-        webxr_surface_providers,
-        image_handler,
-        output_handler,
-        webgl_executor,
-    } = WebGLComm::new(
-        webrender_surfman,
-        webrender_gl,
-        webrender_api_sender,
-        webrender_doc,
-        external_images,
-        gl_type,
-    );
-
-    // Set webrender external image handler for WebGL textures
-    external_image_handlers.set_handler(image_handler, WebrenderImageHandlerType::WebGL);
-
-    // Set webxr external image handler for WebGL textures
-    webxr_main_thread.set_swap_chains(webxr_swap_chains);
-
-    // Set DOM to texture handler, if enabled.
-    if let Some(output_handler) = output_handler {
-        webrender.set_output_image_handler(output_handler);
-    }
-
-    (
-        Some(webgl_threads),
-        Some((webxr_surface_providers, webgl_executor)),
-    )
 }
 
 enum UserAgent {

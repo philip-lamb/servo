@@ -32,6 +32,7 @@ from mach.registrar import Registrar
 
 from mach_bootstrap import _get_exec_path
 from servo.command_base import CommandBase, cd, call, check_call, append_to_path_env, gstreamer_root
+from servo.gstreamer import windows_dlls, windows_plugins, macos_dylibs, macos_plugins
 from servo.util import host_triple
 
 
@@ -46,7 +47,7 @@ def notify_linux(title, text):
         notify_obj = bus.get_object("org.freedesktop.Notifications", "/org/freedesktop/Notifications")
         method = notify_obj.get_dbus_method("Notify", "org.freedesktop.Notifications")
         method(title, 0, "", text, "", [], {"transient": True}, -1)
-    except:
+    except ImportError:
         raise Exception("Optional Python module 'dbus' is not installed.")
 
 
@@ -55,7 +56,7 @@ def notify_win(title, text):
         from servo.win32_toast import WindowsToast
         w = WindowsToast()
         w.balloon_tip(title, text)
-    except:
+    except WindowsError:
         from ctypes import Structure, windll, POINTER, sizeof
         from ctypes.wintypes import DWORD, HANDLE, WINFUNCTYPE, BOOL, UINT
 
@@ -320,7 +321,10 @@ class MachCommands(CommandBase):
             exitcode = process.wait()
             encoding = locale.getpreferredencoding()  # See https://stackoverflow.com/a/9228117
             if exitcode == 0:
-                os.environ.update(eval(stdout.decode(encoding)))
+                decoded = stdout.decode(encoding)
+                if decoded.startswith("environ("):
+                    decoded = decoded.strip()[8:-1]
+                os.environ.update(eval(decoded))
             else:
                 print("Failed to run vcvarsall. stderr:")
                 print(stderr.decode(encoding))
@@ -732,11 +736,19 @@ class MachCommands(CommandBase):
                     status = 1
 
             elif sys.platform == "darwin":
+                servo_exe_dir = os.path.dirname(
+                    self.get_binary_path(release, dev, target=target, simpleservo=libsimpleservo)
+                )
+                assert os.path.exists(servo_exe_dir)
+
+                if not package_gstreamer_dylibs(servo_exe_dir):
+                    return 1
+
                 # On the Mac, set a lovely icon. This makes it easier to pick out the Servo binary in tools
                 # like Instruments.app.
                 try:
                     import Cocoa
-                    icon_path = path.join(self.get_top_dir(), "resources", "servo.png")
+                    icon_path = path.join(self.get_top_dir(), "resources", "servo_1024.png")
                     icon = Cocoa.NSImage.alloc().initWithContentsOfFile_(icon_path)
                     if icon is not None:
                         Cocoa.NSWorkspace.sharedWorkspace().setIcon_forFile_options_(icon,
@@ -839,6 +851,24 @@ def angle_root(target, nuget_env):
     return angle_default_path
 
 
+def package_gstreamer_dylibs(servo_exe_dir):
+    missing = []
+    gst_dylibs = macos_dylibs() + macos_plugins()
+    for gst_lib in gst_dylibs:
+        try:
+            dest_path = os.path.join(servo_exe_dir, os.path.basename(gst_lib))
+            if os.path.isfile(dest_path):
+                os.remove(dest_path)
+            shutil.copy(gst_lib, servo_exe_dir)
+        except Exception as e:
+            print(e)
+            missing += [str(gst_lib)]
+
+    for gst_lib in missing:
+        print("ERROR: could not find required GStreamer DLL: " + gst_lib)
+    return not missing
+
+
 def package_gstreamer_dlls(env, servo_exe_dir, target, uwp):
     gst_root = gstreamer_root(target, env)
     if not gst_root:
@@ -857,28 +887,13 @@ def package_gstreamer_dlls(env, servo_exe_dir, target, uwp):
         "glib-2.0-0.dll",
         "gmodule-2.0-0.dll",
         "gobject-2.0-0.dll",
-        "gstapp-1.0-0.dll",
-        "gstaudio-1.0-0.dll",
-        "gstbase-1.0-0.dll",
-        "gstcodecparsers-1.0-0.dll",
-        "gstcontroller-1.0-0.dll",
-        "gstfft-1.0-0.dll",
-        "gstgl-1.0-0.dll",
-        "gstpbutils-1.0-0.dll",
-        "gstplayer-1.0-0.dll",
-        "gstreamer-1.0-0.dll",
-        "gstriff-1.0-0.dll",
-        "gstrtp-1.0-0.dll",
-        "gstrtsp-1.0-0.dll",
-        "gstsdp-1.0-0.dll",
-        "gsttag-1.0-0.dll",
-        "gstvideo-1.0-0.dll",
-        "gstwebrtc-1.0-0.dll",
         "intl-8.dll",
         "orc-0.4-0.dll",
         "swresample-3.dll",
         "z-1.dll",
     ]
+
+    gst_dlls += windows_dlls(uwp)
 
     if uwp:
         # These come from a more recent version of ffmpeg and
@@ -894,7 +909,6 @@ def package_gstreamer_dlls(env, servo_exe_dir, target, uwp):
         # with UWP's restrictions.
         gst_dlls += [
             "graphene-1.0-0.dll",
-            "gstsctp-1.0-0.dll",
             "libgmp-10.dll",
             "libgnutls-30.dll",
             "libhogweed-4.dll",
@@ -917,7 +931,7 @@ def package_gstreamer_dlls(env, servo_exe_dir, target, uwp):
     for gst_lib in gst_dlls:
         try:
             shutil.copy(path.join(gst_root, "bin", gst_lib), servo_exe_dir)
-        except:
+        except Exception:
             missing += [str(gst_lib)]
 
     for gst_lib in missing:
@@ -926,42 +940,7 @@ def package_gstreamer_dlls(env, servo_exe_dir, target, uwp):
         return False
 
     # Only copy a subset of the available plugins.
-    gst_dlls = [
-        "gstapp.dll",
-        "gstaudioconvert.dll",
-        "gstaudiofx.dll",
-        "gstaudioparsers.dll",
-        "gstaudioresample.dll",
-        "gstautodetect.dll",
-        "gstcoreelements.dll",
-        "gstdeinterlace.dll",
-        "gstplayback.dll",
-        "gstinterleave.dll",
-        "gstisomp4.dll",
-        "gstlibav.dll",
-        "gstproxy.dll",
-        "gsttypefindfunctions.dll",
-        "gstvideoconvert.dll",
-        "gstvideofilter.dll",
-        "gstvideoparsersbad.dll",
-        "gstvideoscale.dll",
-        "gstvolume.dll",
-        "gstwasapi.dll",
-    ]
-
-    if not uwp:
-        gst_dlls += [
-            "gstmatroska.dll",
-            "gstnice.dll",
-            "gstogg.dll",
-            "gstopengl.dll",
-            "gstopus.dll",
-            "gstrtp.dll",
-            "gsttheora.dll",
-            "gstvorbis.dll",
-            "gstvpx.dll",
-            "gstwebrtc.dll",
-        ]
+    gst_dlls = windows_plugins(uwp)
 
     gst_plugin_path_root = os.environ.get("GSTREAMER_PACKAGE_PLUGIN_PATH") or gst_root
     gst_plugin_path = path.join(gst_plugin_path_root, "lib", "gstreamer-1.0")
@@ -973,7 +952,7 @@ def package_gstreamer_dlls(env, servo_exe_dir, target, uwp):
     for gst_lib in gst_dlls:
         try:
             shutil.copy(path.join(gst_plugin_path, gst_lib), servo_exe_dir)
-        except:
+        except Exception:
             missing += [str(gst_lib)]
 
     for gst_lib in missing:

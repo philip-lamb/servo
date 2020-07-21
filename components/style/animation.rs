@@ -14,18 +14,25 @@ use crate::properties::animated_properties::{AnimationValue, AnimationValueMap};
 use crate::properties::longhands::animation_direction::computed_value::single_value::T as AnimationDirection;
 use crate::properties::longhands::animation_fill_mode::computed_value::single_value::T as AnimationFillMode;
 use crate::properties::longhands::animation_play_state::computed_value::single_value::T as AnimationPlayState;
+use crate::properties::AnimationDeclarations;
 use crate::properties::{
     ComputedValues, Importance, LonghandId, LonghandIdSet, PropertyDeclarationBlock,
     PropertyDeclarationId,
 };
 use crate::rule_tree::CascadeLevel;
+use crate::selector_parser::PseudoElement;
+use crate::shared_lock::{Locked, SharedRwLock};
 use crate::style_resolver::StyleResolverForElement;
 use crate::stylesheets::keyframes_rule::{KeyframesAnimation, KeyframesStep, KeyframesStepValue};
 use crate::values::animated::{Animate, Procedure};
 use crate::values::computed::{Time, TimingFunction};
 use crate::values::generics::box_::AnimationIterationCount;
-use crate::values::generics::easing::{StepPosition, TimingFunction as GenericTimingFunction};
+use crate::values::generics::easing::{
+    StepPosition, TimingFunction as GenericTimingFunction, TimingKeyword,
+};
 use crate::Atom;
+use fxhash::FxHashMap;
+use parking_lot::RwLock;
 use servo_arc::Arc;
 use std::fmt;
 
@@ -120,8 +127,14 @@ impl PropertyAnimation {
                 (current_step as f64) / (jumps as f64)
             },
             GenericTimingFunction::Keyword(keyword) => {
-                let (x1, x2, y1, y2) = keyword.to_bezier();
-                Bezier::new(x1, x2, y1, y2).solve(progress, epsilon)
+                let bezier = match keyword {
+                    TimingKeyword::Linear => return progress,
+                    TimingKeyword::Ease => Bezier::new(0.25, 0.1, 0.25, 1.),
+                    TimingKeyword::EaseIn => Bezier::new(0.42, 0., 1., 1.),
+                    TimingKeyword::EaseOut => Bezier::new(0., 0., 0.58, 1.),
+                    TimingKeyword::EaseInOut => Bezier::new(0.42, 0., 0.58, 1.),
+                };
+                bezier.solve(progress, epsilon)
             },
         }
     }
@@ -393,9 +406,6 @@ impl ComputedKeyframe {
 /// A CSS Animation
 #[derive(Clone, MallocSizeOf)]
 pub struct Animation {
-    /// The node associated with this animation.
-    pub node: OpaqueNode,
-
     /// The name of this animation as defined by the style.
     pub name: Atom,
 
@@ -468,20 +478,28 @@ impl Animation {
             return false;
         }
 
+        if self.on_last_iteration() {
+            return false;
+        }
+
+        self.iterate();
+        true
+    }
+
+    fn iterate(&mut self) {
+        debug_assert!(!self.on_last_iteration());
+
         if let KeyframesIterationState::Finite(ref mut current, max) = self.iteration_state {
-            // If we are already on the final iteration, just exit now. This prevents
-            // us from updating the direction, which might be needed for the correct
-            // handling of animation-fill-mode and also firing animationiteration events
-            // at the end of animations.
             *current = (*current + 1.).min(max);
-            if *current == max {
-                return false;
-            }
+        }
+
+        if let AnimationState::Paused(ref mut progress) = self.state {
+            debug_assert!(*progress > 1.);
+            *progress -= 1.;
         }
 
         // Update the next iteration direction if applicable.
-        // TODO(mrobinson): The duration might now be wrong for floating point iteration counts.
-        self.started_at += self.duration + self.delay;
+        self.started_at += self.duration;
         match self.direction {
             AnimationDirection::Alternate | AnimationDirection::AlternateReverse => {
                 self.current_direction = match self.current_direction {
@@ -492,36 +510,55 @@ impl Animation {
             },
             _ => {},
         }
-
-        true
     }
 
+    /// A number (> 0 and <= 1) which represents the fraction of a full iteration
+    /// that the current iteration of the animation lasts. This will be less than 1
+    /// if the current iteration is the fractional remainder of a non-integral
+    /// iteration count.
+    pub fn current_iteration_end_progress(&self) -> f64 {
+        match self.iteration_state {
+            KeyframesIterationState::Finite(current, max) => (max - current).min(1.),
+            KeyframesIterationState::Infinite(_) => 1.,
+        }
+    }
+
+    /// The duration of the current iteration of this animation which may be less
+    /// than the animation duration if it has a non-integral iteration count.
+    pub fn current_iteration_duration(&self) -> f64 {
+        self.current_iteration_end_progress() * self.duration
+    }
+
+    /// Whether or not the current iteration is over. Note that this method assumes that
+    /// the animation is still running.
     fn iteration_over(&self, time: f64) -> bool {
-        time > (self.started_at + self.duration)
+        time > (self.started_at + self.current_iteration_duration())
+    }
+
+    /// Assuming this animation is running, whether or not it is on the last iteration.
+    fn on_last_iteration(&self) -> bool {
+        match self.iteration_state {
+            KeyframesIterationState::Finite(current, max) => current >= (max - 1.),
+            KeyframesIterationState::Infinite(_) => false,
+        }
     }
 
     /// Whether or not this animation has finished at the provided time. This does
     /// not take into account canceling i.e. when an animation or transition is
     /// canceled due to changes in the style.
     pub fn has_ended(&self, time: f64) -> bool {
-        match self.state {
-            AnimationState::Running => {},
-            AnimationState::Finished => return true,
-            AnimationState::Pending | AnimationState::Canceled | AnimationState::Paused(_) => {
-                return false
-            },
-        }
-
-        if !self.iteration_over(time) {
+        if !self.on_last_iteration() {
             return false;
         }
 
-        // If we have a limited number of iterations and we cannot advance to another
-        // iteration, then we have ended.
-        return match self.iteration_state {
-            KeyframesIterationState::Finite(current, max) => max == current,
-            KeyframesIterationState::Infinite(..) => false,
+        let progress = match self.state {
+            AnimationState::Finished => return true,
+            AnimationState::Paused(progress) => progress,
+            AnimationState::Running => (time - self.started_at) / self.duration,
+            AnimationState::Pending | AnimationState::Canceled => return false,
         };
+
+        progress >= self.current_iteration_end_progress()
     }
 
     /// Updates the appropiate state from other animation.
@@ -599,38 +636,36 @@ impl Animation {
     /// Fill in an `AnimationValueMap` with values calculated from this animation at
     /// the given time value.
     fn get_property_declaration_at_time(&self, now: f64, map: &mut AnimationValueMap) {
-        let duration = self.duration;
-        let started_at = self.started_at;
+        debug_assert!(!self.computed_steps.is_empty());
 
-        let now = match self.state {
-            AnimationState::Running | AnimationState::Pending | AnimationState::Finished => now,
-            AnimationState::Paused(progress) => started_at + duration * progress,
+        let total_progress = match self.state {
+            AnimationState::Running | AnimationState::Pending | AnimationState::Finished => {
+                (now - self.started_at) / self.duration
+            },
+            AnimationState::Paused(progress) => progress,
             AnimationState::Canceled => return,
         };
 
-        debug_assert!(!self.computed_steps.is_empty());
-
-        let mut total_progress = (now - started_at) / duration;
         if total_progress < 0. &&
             self.fill_mode != AnimationFillMode::Backwards &&
             self.fill_mode != AnimationFillMode::Both
         {
             return;
         }
-
-        if total_progress > 1. &&
+        if self.has_ended(now) &&
             self.fill_mode != AnimationFillMode::Forwards &&
             self.fill_mode != AnimationFillMode::Both
         {
             return;
         }
-        total_progress = total_progress.min(1.0).max(0.0);
+        let total_progress = total_progress
+            .min(self.current_iteration_end_progress())
+            .max(0.0);
 
         // Get the indices of the previous (from) keyframe and the next (to) keyframe.
         let next_keyframe_index;
         let prev_keyframe_index;
         let num_steps = self.computed_steps.len();
-        debug_assert!(num_steps > 0);
         match self.current_direction {
             AnimationDirection::Normal => {
                 next_keyframe_index = self
@@ -672,45 +707,43 @@ impl Animation {
             None => return,
         };
 
+        // If we only need to take into account one keyframe, then exit early
+        // in order to avoid doing more work.
         let mut add_declarations_to_map = |keyframe: &ComputedKeyframe| {
             for value in keyframe.values.iter() {
                 map.insert(value.id(), value.clone());
             }
         };
-
         if total_progress <= 0.0 {
             add_declarations_to_map(&prev_keyframe);
             return;
         }
-
         if total_progress >= 1.0 {
             add_declarations_to_map(&next_keyframe);
             return;
         }
 
-        let relative_timespan =
-            (next_keyframe.start_percentage - prev_keyframe.start_percentage).abs();
-        let relative_duration = relative_timespan as f64 * duration;
-        let last_keyframe_ended_at = match self.current_direction {
-            AnimationDirection::Normal => {
-                self.started_at + (duration * prev_keyframe.start_percentage as f64)
-            },
-            AnimationDirection::Reverse => {
-                self.started_at + (duration * (1. - prev_keyframe.start_percentage as f64))
-            },
+        let percentage_between_keyframes =
+            (next_keyframe.start_percentage - prev_keyframe.start_percentage).abs() as f64;
+        let duration_between_keyframes = percentage_between_keyframes * self.duration;
+        let direction_aware_prev_keyframe_start_percentage = match self.current_direction {
+            AnimationDirection::Normal => prev_keyframe.start_percentage as f64,
+            AnimationDirection::Reverse => 1. - prev_keyframe.start_percentage as f64,
             _ => unreachable!(),
         };
+        let progress_between_keyframes = (total_progress -
+            direction_aware_prev_keyframe_start_percentage) /
+            percentage_between_keyframes;
 
-        let relative_progress = (now - last_keyframe_ended_at) / relative_duration;
         for (from, to) in prev_keyframe.values.iter().zip(next_keyframe.values.iter()) {
             let animation = PropertyAnimation {
                 from: from.clone(),
                 to: to.clone(),
                 timing_function: prev_keyframe.timing_function,
-                duration: relative_duration as f64,
+                duration: duration_between_keyframes as f64,
             };
 
-            if let Ok(value) = animation.calculate_value(relative_progress) {
+            if let Ok(value) = animation.calculate_value(progress_between_keyframes) {
                 map.insert(value.id(), value);
             }
         }
@@ -736,9 +769,6 @@ impl fmt::Debug for Animation {
 /// A CSS Transition
 #[derive(Clone, Debug, MallocSizeOf)]
 pub struct Transition {
-    /// The node associated with this animation.
-    pub node: OpaqueNode,
-
     /// The start time of this transition, which is the current value of the animation
     /// timeline when this transition was created plus any animation delay.
     pub start_time: f64,
@@ -890,8 +920,9 @@ impl ElementAnimationSet {
         }
     }
 
-    pub(crate) fn apply_active_animations(
-        &mut self,
+    /// Apply all active animations.
+    pub fn apply_active_animations(
+        &self,
         context: &SharedStyleContext,
         style: &mut Arc<ComputedValues>,
     ) {
@@ -987,7 +1018,6 @@ impl ElementAnimationSet {
         &mut self,
         might_need_transitions_update: bool,
         context: &SharedStyleContext,
-        opaque_node: OpaqueNode,
         old_style: Option<&Arc<ComputedValues>>,
         after_change_style: &Arc<ComputedValues>,
     ) {
@@ -1015,7 +1045,6 @@ impl ElementAnimationSet {
 
         let transitioning_properties = start_transitions_if_applicable(
             context,
-            opaque_node,
             &before_change_style,
             after_change_style,
             self,
@@ -1037,7 +1066,6 @@ impl ElementAnimationSet {
     fn start_transition_if_applicable(
         &mut self,
         context: &SharedStyleContext,
-        opaque_node: OpaqueNode,
         longhand_id: LonghandId,
         index: usize,
         old_style: &ComputedValues,
@@ -1079,7 +1107,6 @@ impl ElementAnimationSet {
         // it if we are replacing a reversed transition.
         let reversing_adjusted_start_value = property_animation.from.clone();
         let mut new_transition = Transition {
-            node: opaque_node,
             start_time: now + delay,
             delay,
             property_animation,
@@ -1143,11 +1170,143 @@ impl ElementAnimationSet {
     }
 }
 
+#[derive(Clone, Debug, Eq, Hash, MallocSizeOf, PartialEq)]
+/// A key that is used to identify nodes in the `DocumentAnimationSet`.
+pub struct AnimationSetKey {
+    /// The node for this `AnimationSetKey`.
+    pub node: OpaqueNode,
+    /// The pseudo element for this `AnimationSetKey`. If `None` this key will
+    /// refer to the main content for its node.
+    pub pseudo_element: Option<PseudoElement>,
+}
+
+impl AnimationSetKey {
+    /// Create a new key given a node and optional pseudo element.
+    pub fn new(node: OpaqueNode, pseudo_element: Option<PseudoElement>) -> Self {
+        AnimationSetKey {
+            node,
+            pseudo_element,
+        }
+    }
+
+    /// Create a new key for the main content of this node.
+    pub fn new_for_non_pseudo(node: OpaqueNode) -> Self {
+        AnimationSetKey {
+            node,
+            pseudo_element: None,
+        }
+    }
+
+    /// Create a new key for given node and pseudo element.
+    pub fn new_for_pseudo(node: OpaqueNode, pseudo_element: PseudoElement) -> Self {
+        AnimationSetKey {
+            node,
+            pseudo_element: Some(pseudo_element),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, MallocSizeOf)]
+/// A set of animations for a document.
+pub struct DocumentAnimationSet {
+    /// The `ElementAnimationSet`s that this set contains.
+    #[ignore_malloc_size_of = "Arc is hard"]
+    pub sets: Arc<RwLock<FxHashMap<AnimationSetKey, ElementAnimationSet>>>,
+}
+
+impl DocumentAnimationSet {
+    /// Return whether or not the provided node has active CSS animations.
+    pub fn has_active_animations(&self, key: &AnimationSetKey) -> bool {
+        self.sets
+            .read()
+            .get(key)
+            .map_or(false, |set| set.has_active_animation())
+    }
+
+    /// Return whether or not the provided node has active CSS transitions.
+    pub fn has_active_transitions(&self, key: &AnimationSetKey) -> bool {
+        self.sets
+            .read()
+            .get(key)
+            .map_or(false, |set| set.has_active_transition())
+    }
+
+    /// Return a locked PropertyDeclarationBlock with animation values for the given
+    /// key and time.
+    pub fn get_animation_declarations(
+        &self,
+        key: &AnimationSetKey,
+        time: f64,
+        shared_lock: &SharedRwLock,
+    ) -> Option<Arc<Locked<PropertyDeclarationBlock>>> {
+        self.sets
+            .read()
+            .get(key)
+            .and_then(|set| set.get_value_map_for_active_animations(time))
+            .map(|map| {
+                let block = PropertyDeclarationBlock::from_animation_value_map(&map);
+                Arc::new(shared_lock.wrap(block))
+            })
+    }
+
+    /// Return a locked PropertyDeclarationBlock with transition values for the given
+    /// key and time.
+    pub fn get_transition_declarations(
+        &self,
+        key: &AnimationSetKey,
+        time: f64,
+        shared_lock: &SharedRwLock,
+    ) -> Option<Arc<Locked<PropertyDeclarationBlock>>> {
+        self.sets
+            .read()
+            .get(key)
+            .and_then(|set| set.get_value_map_for_active_transitions(time))
+            .map(|map| {
+                let block = PropertyDeclarationBlock::from_animation_value_map(&map);
+                Arc::new(shared_lock.wrap(block))
+            })
+    }
+
+    /// Get all the animation declarations for the given key, returning an empty
+    /// `AnimationDeclarations` if there are no animations.
+    pub fn get_all_declarations(
+        &self,
+        key: &AnimationSetKey,
+        time: f64,
+        shared_lock: &SharedRwLock,
+    ) -> AnimationDeclarations {
+        let sets = self.sets.read();
+        let set = match sets.get(key) {
+            Some(set) => set,
+            None => return Default::default(),
+        };
+
+        let animations = set.get_value_map_for_active_animations(time).map(|map| {
+            let block = PropertyDeclarationBlock::from_animation_value_map(&map);
+            Arc::new(shared_lock.wrap(block))
+        });
+        let transitions = set.get_value_map_for_active_transitions(time).map(|map| {
+            let block = PropertyDeclarationBlock::from_animation_value_map(&map);
+            Arc::new(shared_lock.wrap(block))
+        });
+        AnimationDeclarations {
+            animations,
+            transitions,
+        }
+    }
+
+    /// Cancel all animations for set at the given key.
+    pub fn cancel_all_animations_for_key(&self, key: &AnimationSetKey) {
+        if let Some(set) = self.sets.write().get_mut(key) {
+            set.cancel_all_animations();
+        }
+    }
+}
+
 /// Kick off any new transitions for this node and return all of the properties that are
 /// transitioning. This is at the end of calculating style for a single node.
 pub fn start_transitions_if_applicable(
     context: &SharedStyleContext,
-    opaque_node: OpaqueNode,
     old_style: &ComputedValues,
     new_style: &Arc<ComputedValues>,
     animation_state: &mut ElementAnimationSet,
@@ -1162,7 +1321,6 @@ pub fn start_transitions_if_applicable(
         properties_that_transition.insert(physical_property);
         animation_state.start_transition_if_applicable(
             context,
-            opaque_node,
             physical_property,
             transition.index,
             old_style,
@@ -1192,7 +1350,7 @@ pub fn maybe_start_animations<E>(
         };
 
         debug!("maybe_start_animations: name={}", name);
-        let duration = box_style.animation_duration_mod(i).seconds();
+        let duration = box_style.animation_duration_mod(i).seconds() as f64;
         if duration == 0. {
             continue;
         }
@@ -1212,8 +1370,11 @@ pub fn maybe_start_animations<E>(
             continue;
         }
 
+        // NB: This delay may be negative, meaning that the animation may be created
+        // in a state where we have advanced one or more iterations or even that the
+        // animation begins in a finished state.
         let delay = box_style.animation_delay_mod(i).seconds();
-        let animation_start = context.current_time_for_animations + delay as f64;
+
         let iteration_state = match box_style.animation_iteration_count_mod(i) {
             AnimationIterationCount::Infinite => KeyframesIterationState::Infinite(0.0),
             AnimationIterationCount::Number(n) => KeyframesIterationState::Finite(0.0, n.into()),
@@ -1230,8 +1391,11 @@ pub fn maybe_start_animations<E>(
             },
         };
 
+        let now = context.current_time_for_animations;
+        let started_at = now + delay as f64;
+        let mut starting_progress = (now - started_at) / duration;
         let state = match box_style.animation_play_state_mod(i) {
-            AnimationPlayState::Paused => AnimationState::Paused(0.),
+            AnimationPlayState::Paused => AnimationState::Paused(starting_progress),
             AnimationPlayState::Running => AnimationState::Pending,
         };
 
@@ -1244,13 +1408,12 @@ pub fn maybe_start_animations<E>(
             resolver,
         );
 
-        let new_animation = Animation {
-            node: element.as_node().opaque(),
+        let mut new_animation = Animation {
             name: name.clone(),
             properties_changed: keyframe_animation.properties_changed,
             computed_steps,
-            started_at: animation_start,
-            duration: duration as f64,
+            started_at,
+            duration,
             fill_mode: box_style.animation_fill_mode_mod(i),
             delay: delay as f64,
             iteration_state,
@@ -1260,6 +1423,13 @@ pub fn maybe_start_animations<E>(
             cascade_style: new_style.clone(),
             is_new: true,
         };
+
+        // If we started with a negative delay, make sure we iterate the animation if
+        // the delay moves us past the first iteration.
+        while starting_progress > 1. && !new_animation.on_last_iteration() {
+            new_animation.iterate();
+            starting_progress -= 1.;
+        }
 
         animation_state.dirty = true;
 

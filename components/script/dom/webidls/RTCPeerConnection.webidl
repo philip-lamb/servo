@@ -115,6 +115,22 @@ enum RTCSignalingState {
     "closed"
 };
 
+dictionary RTCRtpCodingParameters {
+  DOMString rid;
+};
+
+dictionary RTCRtpEncodingParameters : RTCRtpCodingParameters {
+  boolean active = true;
+  unsigned long maxBitrate;
+  double scaleResolutionDownBy;
+};
+
+dictionary RTCRtpTransceiverInit {
+  RTCRtpTransceiverDirection direction = "sendrecv";
+  sequence<MediaStream> streams = [];
+  sequence<RTCRtpEncodingParameters> sendEncodings = [];
+};
+
 partial interface RTCPeerConnection {
     // sequence<RTCRtpSender>      getSenders();
     // sequence<RTCRtpReceiver>    getReceivers();
@@ -122,7 +138,16 @@ partial interface RTCPeerConnection {
     // RTCRtpSender                addTrack(MediaStreamTrack track,
     //                                      MediaStream... streams);
     // void                        removeTrack(RTCRtpSender sender);
-    // RTCRtpTransceiver           addTransceiver((MediaStreamTrack or DOMString) trackOrKind,
-    //                                            optional RTCRtpTransceiverInit init);
+    [Pref="dom.webrtc.transceiver.enabled"]
+    RTCRtpTransceiver           addTransceiver((MediaStreamTrack or DOMString) trackOrKind,
+                                               optional RTCRtpTransceiverInit init = {});
     attribute EventHandler ontrack;
+};
+
+// https://www.w3.org/TR/webrtc/#rtcpeerconnection-interface-extensions-0
+partial interface RTCPeerConnection {
+  // readonly attribute RTCSctpTransport? sctp;
+  RTCDataChannel createDataChannel(USVString label,
+                                   optional RTCDataChannelInit dataChannelDict = {});
+  attribute EventHandler ondatachannel;
 };

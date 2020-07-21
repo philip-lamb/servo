@@ -7,6 +7,7 @@ use crate::formatting_contexts::IndependentFormattingContext;
 use crate::positioned::AbsolutelyPositionedBox;
 
 mod construct;
+mod geom;
 mod layout;
 
 #[derive(Debug, Serialize)]

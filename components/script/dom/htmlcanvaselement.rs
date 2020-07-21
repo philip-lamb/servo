@@ -7,10 +7,12 @@ use crate::dom::bindings::cell::{ref_filter_map, DomRefCell, Ref};
 use crate::dom::bindings::codegen::Bindings::HTMLCanvasElementBinding::{
     HTMLCanvasElementMethods, RenderingContext,
 };
+use crate::dom::bindings::codegen::Bindings::MediaStreamBinding::MediaStreamMethods;
 use crate::dom::bindings::codegen::Bindings::WebGLRenderingContextBinding::WebGLContextAttributes;
 use crate::dom::bindings::conversions::ConversionResult;
 use crate::dom::bindings::error::{Error, Fallible};
 use crate::dom::bindings::inheritance::Castable;
+use crate::dom::bindings::num::Finite;
 use crate::dom::bindings::reflector::DomObject;
 use crate::dom::bindings::root::{Dom, DomRoot, LayoutDom};
 use crate::dom::bindings::str::{DOMString, USVString};
@@ -20,13 +22,14 @@ use crate::dom::canvasrenderingcontext2d::{
 use crate::dom::document::Document;
 use crate::dom::element::{AttributeMutation, Element, LayoutElementHelpers};
 use crate::dom::globalscope::GlobalScope;
+use crate::dom::gpucanvascontext::GPUCanvasContext;
 use crate::dom::htmlelement::HTMLElement;
+use crate::dom::mediastream::MediaStream;
+use crate::dom::mediastreamtrack::MediaStreamTrack;
 use crate::dom::node::{window_from_node, Node};
 use crate::dom::virtualmethods::VirtualMethods;
 use crate::dom::webgl2renderingcontext::WebGL2RenderingContext;
-use crate::dom::webglrenderingcontext::{
-    LayoutCanvasWebGLRenderingContextHelpers, WebGLRenderingContext,
-};
+use crate::dom::webglrenderingcontext::WebGLRenderingContext;
 use crate::script_runtime::JSContext;
 use base64;
 use canvas_traits::canvas::{CanvasId, CanvasMsg, FromScriptMsg};
@@ -36,11 +39,14 @@ use euclid::default::{Rect, Size2D};
 use html5ever::{LocalName, Prefix};
 use image::png::PNGEncoder;
 use image::ColorType;
-use ipc_channel::ipc::IpcSharedMemory;
+use ipc_channel::ipc::{self as ipcchan, IpcSharedMemory};
 use js::error::throw_type_error;
 use js::rust::HandleValue;
 use profile_traits::ipc;
 use script_layout_interface::{HTMLCanvasData, HTMLCanvasDataSource};
+use script_traits::ScriptMsg;
+use servo_media::streams::registry::MediaStreamId;
+use servo_media::streams::MediaStreamType;
 use style::attr::{AttrValue, LengthOrPercentageOrAuto};
 
 const DEFAULT_WIDTH: u32 = 300;
@@ -52,6 +58,7 @@ pub enum CanvasContext {
     Context2d(Dom<CanvasRenderingContext2D>),
     WebGL(Dom<WebGLRenderingContext>),
     WebGL2(Dom<WebGL2RenderingContext>),
+    WebGPU(Dom<GPUCanvasContext>),
 }
 
 #[dom_struct]
@@ -95,6 +102,7 @@ impl HTMLCanvasElement {
                 },
                 CanvasContext::WebGL(ref context) => context.recreate(size),
                 CanvasContext::WebGL2(ref context) => context.recreate(size),
+                CanvasContext::WebGPU(_) => unimplemented!(),
             }
         }
     }
@@ -109,6 +117,11 @@ impl HTMLCanvasElement {
             _ => true,
         }
     }
+}
+
+pub trait LayoutCanvasRenderingContextHelpers {
+    #[allow(unsafe_code)]
+    unsafe fn canvas_data_source(self) -> HTMLCanvasDataSource;
 }
 
 pub trait LayoutHTMLCanvasElementHelpers {
@@ -130,6 +143,9 @@ impl LayoutHTMLCanvasElementHelpers for LayoutDom<'_, HTMLCanvasElement> {
                     context.to_layout().canvas_data_source()
                 },
                 Some(&CanvasContext::WebGL2(ref context)) => {
+                    context.to_layout().canvas_data_source()
+                },
+                Some(&CanvasContext::WebGPU(ref context)) => {
                     context.to_layout().canvas_data_source()
                 },
                 None => HTMLCanvasDataSource::Image(None),
@@ -239,6 +255,26 @@ impl HTMLCanvasElement {
         Some(context)
     }
 
+    fn get_or_init_webgpu_context(&self) -> Option<DomRoot<GPUCanvasContext>> {
+        if let Some(ctx) = self.context() {
+            return match *ctx {
+                CanvasContext::WebGPU(ref ctx) => Some(DomRoot::from_ref(ctx)),
+                _ => None,
+            };
+        }
+        let (sender, receiver) = ipcchan::channel().unwrap();
+        let _ = self
+            .global()
+            .script_to_constellation_chan()
+            .send(ScriptMsg::GetWebGPUChan(sender));
+        let window = window_from_node(self);
+        let size = self.get_size();
+        let channel = receiver.recv().expect("Failed to get WebGPU channel");
+        let context = GPUCanvasContext::new(window.upcast::<GlobalScope>(), self, size, channel);
+        *self.context.borrow_mut() = Some(CanvasContext::WebGPU(Dom::from_ref(&*context)));
+        Some(context)
+    }
+
     /// Gets the base WebGLRenderingContext for WebGL or WebGL 2, if exists.
     pub fn get_base_webgl_context(&self) -> Option<DomRoot<WebGLRenderingContext>> {
         match *self.context.borrow() {
@@ -296,6 +332,10 @@ impl HTMLCanvasElement {
                 // TODO: add a method in WebGL2RenderingContext to get the pixels.
                 return None;
             },
+            Some(&CanvasContext::WebGPU(_)) => {
+                // TODO: add a method in GPUCanvasContext to get the pixels.
+                return None;
+            },
             None => None,
         };
 
@@ -333,6 +373,9 @@ impl HTMLCanvasElementMethods for HTMLCanvasElement {
             "webgl2" | "experimental-webgl2" => self
                 .get_or_init_webgl2_context(cx, options)
                 .map(RenderingContext::WebGL2RenderingContext),
+            "gpupresent" => self
+                .get_or_init_webgpu_context()
+                .map(RenderingContext::GPUCanvasContext),
             _ => None,
         }
     }
@@ -371,6 +414,8 @@ impl HTMLCanvasElementMethods for HTMLCanvasElement {
                     None => return Ok(USVString("data:,".into())),
                 }
             },
+            //TODO: Add method get_image_data to GPUCanvasContext
+            Some(CanvasContext::WebGPU(_)) => return Ok(USVString("data:,".into())),
             None => {
                 // Each pixel is fully-transparent black.
                 vec![0; (self.Width() * self.Height() * 4) as usize]
@@ -389,6 +434,15 @@ impl HTMLCanvasElementMethods for HTMLCanvasElement {
         // FIXME(nox): https://github.com/marshallpierce/rust-base64/pull/56
         base64::encode_config_buf(&png, base64::STANDARD, &mut url);
         Ok(USVString(url))
+    }
+
+    /// https://w3c.github.io/mediacapture-fromelement/#dom-htmlcanvaselement-capturestream
+    fn CaptureStream(&self, _frame_request_rate: Option<Finite<f64>>) -> DomRoot<MediaStream> {
+        let global = self.global();
+        let stream = MediaStream::new(&*global);
+        let track = MediaStreamTrack::new(&*global, MediaStreamId::new(), MediaStreamType::Video);
+        stream.AddTrack(&track);
+        stream
     }
 }
 

@@ -5,6 +5,8 @@
 
 namespace winrt::servo {
 
+using namespace Windows::Storage;
+
 void on_load_started() { sServo->Delegate().OnServoLoadStarted(); }
 
 void on_load_ended() { sServo->Delegate().OnServoLoadEnded(); }
@@ -41,9 +43,16 @@ void on_panic(const char *backtrace) {
   throw hresult_error(E_FAIL, char2hstring(backtrace));
 }
 
-void on_ime_state_changed(bool aShow) {
-  sServo->Delegate().OnServoIMEStateChanged(aShow);
+void on_ime_show(const char *text, int32_t x, int32_t y, int32_t width,
+                 int32_t height) {
+  hstring htext = L"";
+  if (text != nullptr) {
+    htext = char2hstring(text);
+  }
+  sServo->Delegate().OnServoIMEShow(htext, x, y, width, height);
 }
+
+void on_ime_hide() { sServo->Delegate().OnServoIMEHide(); }
 
 void set_clipboard_contents(const char *) {
   // FIXME
@@ -83,9 +92,9 @@ void show_context_menu(const char *title, const char *const *items_list,
 }
 
 void on_devtools_started(Servo::DevtoolsServerState result,
-                         const unsigned int port) {
-  sServo->Delegate().OnServoDevtoolsStarted(
-      result == Servo::DevtoolsServerState::Started, port);
+                         const unsigned int port, const char *token) {
+  auto state = result == Servo::DevtoolsServerState::Started;
+  sServo->Delegate().OnServoDevtoolsStarted(state, port, char2hstring(token));
 }
 
 void on_log_output(const char *buffer, uint32_t buffer_length) {
@@ -125,23 +134,21 @@ const char *prompt_input(const char *message, const char *default,
   }
 }
 
-Servo::Servo(hstring url, hstring args, GLsizei width, GLsizei height,
-             EGLNativeWindowType eglNativeWindow, float dpi,
+Servo::Servo(std::optional<hstring> initUrl, hstring args, GLsizei width,
+             GLsizei height, EGLNativeWindowType eglNativeWindow, float dpi,
              ServoDelegate &aDelegate)
     : mWindowHeight(height), mWindowWidth(width), mDelegate(aDelegate) {
-  Windows::Storage::ApplicationDataContainer localSettings =
-      Windows::Storage::ApplicationData::Current().LocalSettings();
+  ApplicationDataContainer localSettings =
+      ApplicationData::Current().LocalSettings();
   if (!localSettings.Containers().HasKey(L"servoUserPrefs")) {
-    Windows::Storage::ApplicationDataContainer container =
-        localSettings.CreateContainer(
-            L"servoUserPrefs",
-            Windows::Storage::ApplicationDataCreateDisposition::Always);
+    ApplicationDataContainer container = localSettings.CreateContainer(
+        L"servoUserPrefs", ApplicationDataCreateDisposition::Always);
   }
 
   auto prefs = localSettings.Containers().Lookup(L"servoUserPrefs");
 
   if (!prefs.Values().HasKey(L"shell.homepage")) {
-    prefs.Values().Insert(L"shell.homepage", box_value(DEFAULT_URL));
+    prefs.Values().Insert(L"shell.homepage", box_value(DEFAULT_URL_PROD));
   }
 
   if (!prefs.Values().HasKey(L"dom.webxr.enabled")) {
@@ -151,42 +158,58 @@ Servo::Servo(hstring url, hstring args, GLsizei width, GLsizei height,
   std::vector<capi::CPref> cprefs;
 
   for (auto pref : prefs.Values()) {
+
     auto key = *hstring2char(pref.Key());
     auto value = pref.Value();
+
     auto type = value.as<Windows::Foundation::IPropertyValue>().Type();
-    capi::CPref pref;
-    pref.key = key;
-    pref.pref_type = capi::CPrefType::Missing;
-    pref.value = NULL;
+    capi::CPref cpref;
+    cpref.key = key;
+    cpref.pref_type = capi::CPrefType::Missing;
+    cpref.value = NULL;
     if (type == Windows::Foundation::PropertyType::Boolean) {
-      pref.pref_type = capi::CPrefType::Bool;
+      cpref.pref_type = capi::CPrefType::Bool;
       auto val = unbox_value<bool>(value);
-      pref.value = &val;
+      cpref.value = &val;
     } else if (type == Windows::Foundation::PropertyType::String) {
-      pref.pref_type = capi::CPrefType::Str;
-      pref.value = *hstring2char(unbox_value<hstring>(value));
+      hstring strValue;
+      if (pref.Key() == L"shell.homepage") {
+        if (initUrl.has_value()) {
+          strValue = *initUrl;
+        } else {
+#ifdef OVERRIDE_DEFAULT_URL
+          strValue = OVERRIDE_DEFAULT_URL;
+#else
+          strValue = unbox_value<hstring>(value);
+#endif
+        }
+      } else {
+        strValue = unbox_value<hstring>(value);
+      }
+      cpref.pref_type = capi::CPrefType::Str;
+      cpref.value = *hstring2char(strValue);
     } else if (type == Windows::Foundation::PropertyType::Int64) {
-      pref.pref_type = capi::CPrefType::Int;
+      cpref.pref_type = capi::CPrefType::Int;
       auto val = unbox_value<int64_t>(value);
-      pref.value = &val;
+      cpref.value = &val;
     } else if (type == Windows::Foundation::PropertyType::Double) {
-      pref.pref_type = capi::CPrefType::Float;
+      cpref.pref_type = capi::CPrefType::Float;
       auto val = unbox_value<double>(value);
-      pref.value = &val;
+      cpref.value = &val;
     } else if (type == Windows::Foundation::PropertyType::Empty) {
-      pref.pref_type = capi::CPrefType::Missing;
+      cpref.pref_type = capi::CPrefType::Missing;
     } else {
-      log("skipping pref %s. Unknown type", key);
+      log(L"skipping pref %s. Unknown type", key);
       continue;
     }
-    cprefs.push_back(pref);
+    cprefs.push_back(cpref);
   }
 
   capi::CPrefList prefsList = {cprefs.size(), cprefs.data()};
 
   capi::CInitOptions o;
   o.prefs = &prefsList;
-  o.args = *hstring2char(args + L"--devtools");
+  o.args = *hstring2char(args + L" --devtools");
   o.width = mWindowWidth;
   o.height = mWindowHeight;
   o.density = dpi;
@@ -214,30 +237,20 @@ Servo::Servo(hstring url, hstring args, GLsizei width, GLsizei height,
 
   sServo = this; // FIXME;
 
-#ifndef _DEBUG
-  char buffer[1024];
-  bool logToFile = GetEnvironmentVariableA("FirefoxRealityLogStdout", buffer,
-                                           sizeof(buffer)) != 0;
-#else
-  bool logToFile = true;
-#endif
-  if (logToFile) {
-    auto current = winrt::Windows::Storage::ApplicationData::Current();
-    auto filePath =
-        std::wstring(current.LocalFolder().Path()) + L"\\stdout.txt";
-    sLogHandle =
-        CreateFile2(filePath.c_str(), GENERIC_WRITE, 0, CREATE_ALWAYS, nullptr);
-    if (sLogHandle == INVALID_HANDLE_VALUE) {
-      throw std::runtime_error("Failed to open the log file: error code " +
-                               std::to_string(GetLastError()));
-    }
+  auto current = ApplicationData::Current();
+  auto filePath = std::wstring(current.LocalFolder().Path()) + L"\\stdout.txt";
+  sLogHandle =
+      CreateFile2(filePath.c_str(), GENERIC_WRITE, 0, CREATE_ALWAYS, nullptr);
+  if (sLogHandle == INVALID_HANDLE_VALUE) {
+    throw std::runtime_error("Failed to open the log file: error code " +
+                             std::to_string(GetLastError()));
+  }
 
-    if (SetFilePointer(sLogHandle, 0, nullptr, FILE_END) ==
-        INVALID_SET_FILE_POINTER) {
-      throw std::runtime_error(
-          "Failed to set file pointer to the end of file: error code " +
-          std::to_string(GetLastError()));
-    }
+  if (SetFilePointer(sLogHandle, 0, nullptr, FILE_END) ==
+      INVALID_SET_FILE_POINTER) {
+    throw std::runtime_error(
+        "Failed to set file pointer to the end of file: error code " +
+        std::to_string(GetLastError()));
   }
 
   capi::CHostCallbacks c;
@@ -249,7 +262,8 @@ Servo::Servo(hstring url, hstring args, GLsizei width, GLsizei height,
   c.on_animating_changed = &on_animating_changed;
   c.on_shutdown_complete = &on_shutdown_complete;
   c.on_allow_navigation = &on_allow_navigation;
-  c.on_ime_state_changed = &on_ime_state_changed;
+  c.on_ime_show = &on_ime_show;
+  c.on_ime_hide = &on_ime_hide;
   c.get_clipboard_contents = &get_clipboard_contents;
   c.set_clipboard_contents = &set_clipboard_contents;
   c.on_media_session_metadata = &on_media_session_metadata;
@@ -315,9 +329,16 @@ Servo::PrefTuple Servo::ResetPref(hstring key) {
   return updatedPref;
 }
 
+void Servo::GoHome() {
+  ApplicationDataContainer localSettings =
+      ApplicationData::Current().LocalSettings();
+  auto prefs = localSettings.Containers().Lookup(L"servoUserPrefs");
+  auto home = unbox_value<hstring>(prefs.Values().Lookup(L"shell.homepage"));
+  LoadUri(home);
+}
+
 void Servo::SaveUserPref(PrefTuple pref) {
-  auto localSettings =
-      Windows::Storage::ApplicationData::Current().LocalSettings();
+  auto localSettings = ApplicationData::Current().LocalSettings();
   auto values = localSettings.Containers().Lookup(L"servoUserPrefs").Values();
   auto [key, val, isDefault] = pref;
   if (isDefault) {

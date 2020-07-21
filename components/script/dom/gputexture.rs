@@ -7,23 +7,23 @@ use crate::dom::bindings::codegen::Bindings::GPUTextureBinding::{
     GPUExtent3DDict, GPUTextureDimension, GPUTextureFormat, GPUTextureMethods,
 };
 use crate::dom::bindings::codegen::Bindings::GPUTextureViewBinding::{
-    GPUTextureAspect, GPUTextureViewDescriptor,
+    GPUTextureAspect, GPUTextureViewDescriptor, GPUTextureViewDimension,
 };
 use crate::dom::bindings::reflector::{reflect_dom_object, DomObject, Reflector};
 use crate::dom::bindings::root::DomRoot;
-use crate::dom::bindings::str::DOMString;
+use crate::dom::bindings::str::USVString;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::gpudevice::{convert_texture_format, convert_texture_view_dimension};
 use crate::dom::gputextureview::GPUTextureView;
 use dom_struct::dom_struct;
-use std::cell::Cell;
+use std::string::String;
 use webgpu::{wgt, WebGPU, WebGPUDevice, WebGPURequest, WebGPUTexture, WebGPUTextureView};
 
 #[dom_struct]
 pub struct GPUTexture {
     reflector_: Reflector,
     texture: WebGPUTexture,
-    label: DomRefCell<Option<DOMString>>,
+    label: DomRefCell<Option<USVString>>,
     device: WebGPUDevice,
     #[ignore_malloc_size_of = "channels are hard"]
     channel: WebGPU,
@@ -34,7 +34,6 @@ pub struct GPUTexture {
     dimension: GPUTextureDimension,
     format: GPUTextureFormat,
     texture_usage: u32,
-    valid: Cell<bool>,
 }
 
 impl GPUTexture {
@@ -48,7 +47,6 @@ impl GPUTexture {
         dimension: GPUTextureDimension,
         format: GPUTextureFormat,
         texture_usage: u32,
-        valid: bool,
     ) -> Self {
         Self {
             reflector_: Reflector::new(),
@@ -62,7 +60,6 @@ impl GPUTexture {
             dimension,
             format,
             texture_usage,
-            valid: Cell::new(valid),
         }
     }
 
@@ -77,7 +74,6 @@ impl GPUTexture {
         dimension: GPUTextureDimension,
         format: GPUTextureFormat,
         texture_usage: u32,
-        valid: bool,
     ) -> DomRoot<Self> {
         reflect_dom_object(
             Box::new(GPUTexture::new_inherited(
@@ -90,7 +86,6 @@ impl GPUTexture {
                 dimension,
                 format,
                 texture_usage,
-                valid,
             )),
             global,
         )
@@ -103,36 +98,51 @@ impl Drop for GPUTexture {
     }
 }
 
+impl GPUTexture {
+    pub fn id(&self) -> WebGPUTexture {
+        self.texture
+    }
+}
+
 impl GPUTextureMethods for GPUTexture {
     /// https://gpuweb.github.io/gpuweb/#dom-gpuobjectbase-label
-    fn GetLabel(&self) -> Option<DOMString> {
+    fn GetLabel(&self) -> Option<USVString> {
         self.label.borrow().clone()
     }
 
     /// https://gpuweb.github.io/gpuweb/#dom-gpuobjectbase-label
-    fn SetLabel(&self, value: Option<DOMString>) {
+    fn SetLabel(&self, value: Option<USVString>) {
         *self.label.borrow_mut() = value;
     }
 
     /// https://gpuweb.github.io/gpuweb/#dom-gputexture-createview
     fn CreateView(&self, descriptor: &GPUTextureViewDescriptor) -> DomRoot<GPUTextureView> {
-        let desc = wgt::TextureViewDescriptor {
-            label: Default::default(),
-            format: convert_texture_format(descriptor.format.unwrap_or(self.format)),
-            dimension: match descriptor.dimension {
-                Some(d) => convert_texture_view_dimension(d),
-                None => match self.dimension {
-                    GPUTextureDimension::_1d => wgt::TextureViewDimension::D1,
-                    GPUTextureDimension::_2d => {
-                        if self.texture_size.depth > 1 && descriptor.arrayLayerCount == 0 {
-                            wgt::TextureViewDimension::D2Array
-                        } else {
-                            wgt::TextureViewDimension::D2
-                        }
-                    },
-                    GPUTextureDimension::_3d => wgt::TextureViewDimension::D3,
+        let dimension = if let Some(d) = descriptor.dimension {
+            d
+        } else {
+            match self.dimension {
+                GPUTextureDimension::_1d => GPUTextureViewDimension::_1d,
+                GPUTextureDimension::_2d => {
+                    if self.texture_size.depth > 1 && descriptor.arrayLayerCount == 0 {
+                        GPUTextureViewDimension::_2d_array
+                    } else {
+                        GPUTextureViewDimension::_2d
+                    }
                 },
-            },
+                GPUTextureDimension::_3d => GPUTextureViewDimension::_3d,
+            }
+        };
+
+        let format = descriptor.format.unwrap_or(self.format);
+
+        let desc = wgt::TextureViewDescriptor {
+            label: descriptor
+                .parent
+                .label
+                .as_ref()
+                .map(|s| String::from(s.as_ref())),
+            format: convert_texture_format(format),
+            dimension: convert_texture_view_dimension(dimension),
             aspect: match descriptor.aspect {
                 GPUTextureAspect::All => wgt::TextureAspect::All,
                 GPUTextureAspect::Stencil_only => wgt::TextureAspect::StencilOnly,
@@ -169,7 +179,7 @@ impl GPUTextureMethods for GPUTexture {
 
         let texture_view = WebGPUTextureView(texture_view_id);
 
-        GPUTextureView::new(&self.global(), texture_view, self.device, true)
+        GPUTextureView::new(&self.global(), texture_view, &self)
     }
 
     /// https://gpuweb.github.io/gpuweb/#dom-gputexture-destroy

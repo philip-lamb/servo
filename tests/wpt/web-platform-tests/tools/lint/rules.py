@@ -242,6 +242,16 @@ class EarlyTestharnessReport(Rule):
     to_fix = "flip the order"
 
 
+class EarlyTestdriverVendor(Rule):
+    name = "EARLY-TESTDRIVER-VENDOR"
+    description = collapse("""
+        Test file has an instance of
+        `<script src='/resources/testdriver-vendor.js'>` prior to
+        `<script src='/resources/testdriver.js'>`
+    """)
+    to_fix = "flip the order"
+
+
 class MultipleTestdriver(Rule):
     name = "MULTIPLE-TESTDRIVER"
     description = "More than one `<script src='/resources/testdriver.js'>`"
@@ -354,7 +364,7 @@ class Regexp(six.with_metaclass(abc.ABCMeta)):
         self._re = re.compile(self.pattern)  # type: Pattern[bytes]
 
     def applies(self, path):
-        # type: (str) -> bool
+        # type: (Text) -> bool
         return (self.file_extensions is None or
                 os.path.splitext(path)[1] in self.file_extensions)
 

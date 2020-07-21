@@ -5,7 +5,7 @@
 use crate::data_loader::decode;
 use crate::fetch::cors_cache::CorsCache;
 use crate::filemanager_thread::{FileManager, FILE_CHUNK_SIZE};
-use crate::http_loader::{determine_request_referrer, http_fetch, HttpState};
+use crate::http_loader::{determine_requests_referrer, http_fetch, HttpState};
 use crate::http_loader::{set_default_accept, set_default_accept_language};
 use crate::subresource_integrity::is_response_integrity_valid;
 use content_security_policy as csp;
@@ -23,7 +23,8 @@ use net_traits::request::{
     is_cors_safelisted_method, is_cors_safelisted_request_header, Origin, ResponseTainting, Window,
 };
 use net_traits::request::{
-    BodyChunkRequest, CredentialsMode, Destination, Referrer, Request, RequestMode,
+    BodyChunkRequest, BodyChunkResponse, CredentialsMode, Destination, Referrer, Request,
+    RequestMode,
 };
 use net_traits::response::{Response, ResponseBody, ResponseType};
 use net_traits::{FetchTaskTarget, NetworkError, ReferrerPolicy, ResourceFetchTiming};
@@ -235,31 +236,19 @@ pub fn main_fetch(
         .or(Some(ReferrerPolicy::NoReferrerWhenDowngrade));
 
     // Step 8.
-    {
-        let referrer_url = match mem::replace(&mut request.referrer, Referrer::NoReferrer) {
-            Referrer::NoReferrer => None,
-            Referrer::Client => {
-                // FIXME(#14507): We should never get this value here; it should
-                //                already have been handled in the script thread.
-                request.headers.remove(header::REFERER);
-                None
-            },
-            Referrer::ReferrerUrl(url) => {
-                request.headers.remove(header::REFERER);
-                let current_url = request.current_url();
-                determine_request_referrer(
-                    &mut request.headers,
-                    request.referrer_policy.unwrap(),
-                    url,
-                    current_url,
-                    request.https_state,
-                )
-            },
-        };
-        if let Some(referrer_url) = referrer_url {
-            request.referrer = Referrer::ReferrerUrl(referrer_url);
-        }
-    }
+    assert!(request.referrer_policy.is_some());
+    let referrer_url = match mem::replace(&mut request.referrer, Referrer::NoReferrer) {
+        Referrer::NoReferrer => None,
+        Referrer::ReferrerUrl(referrer_source) | Referrer::Client(referrer_source) => {
+            request.headers.remove(header::REFERER);
+            determine_requests_referrer(
+                request.referrer_policy.unwrap(),
+                referrer_source,
+                request.current_url(),
+            )
+        },
+    };
+    request.referrer = referrer_url.map_or(Referrer::NoReferrer, |url| Referrer::ReferrerUrl(url));
 
     // Step 9.
     // TODO: handle FTP URLs.
@@ -641,7 +630,10 @@ fn scheme_fetch(
                 let (body_chan, body_port) = ipc::channel().unwrap();
                 let _ = stream.send(BodyChunkRequest::Connect(body_chan));
                 let _ = stream.send(BodyChunkRequest::Chunk);
-                body_port.recv().ok()
+                match body_port.recv().ok() {
+                    Some(BodyChunkResponse::Chunk(bytes)) => Some(bytes),
+                    _ => panic!("cert should be sent in a single chunk."),
+                }
             });
             let data = data.as_ref().and_then(|b| {
                 let idx = b.iter().position(|b| *b == b'&')?;

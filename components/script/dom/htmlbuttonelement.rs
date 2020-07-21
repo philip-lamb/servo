@@ -77,6 +77,11 @@ impl HTMLButtonElement {
             document,
         )
     }
+
+    #[inline]
+    pub fn is_submit_button(&self) -> bool {
+        self.button_type.get() == ButtonType::Submit
+    }
 }
 
 impl HTMLButtonElementMethods for HTMLButtonElement {
@@ -233,6 +238,7 @@ impl VirtualMethods for HTMLButtonElement {
                         el.check_ancestors_disabled_state_for_form_control();
                     },
                 }
+                el.update_sequentially_focusable_status();
             },
             &local_name!("type") => match mutation {
                 AttributeMutation::Set(_) => {

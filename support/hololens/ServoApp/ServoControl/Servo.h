@@ -6,7 +6,7 @@
 
 #include "pch.h"
 #include <EGL/egl.h>
-#include "logs.h"
+#include "strutils.h"
 #include <stdlib.h>
 
 namespace winrt::servo {
@@ -26,8 +26,8 @@ class ServoDelegate;
 
 class Servo {
 public:
-  Servo(hstring, hstring, GLsizei, GLsizei, EGLNativeWindowType, float,
-        ServoDelegate &);
+  Servo(std::optional<hstring>, hstring, GLsizei, GLsizei, EGLNativeWindowType,
+        float, ServoDelegate &);
   ~Servo();
   ServoDelegate &Delegate() { return mDelegate; }
 
@@ -63,12 +63,15 @@ public:
   void TouchMove(float x, float y, int32_t id) { touch_move(x, y, id); }
   void TouchCancel(float x, float y, int32_t id) { touch_cancel(x, y, id); }
   void MouseMove(float x, float y) { mouse_move(x, y); }
+  void KeyDown(const char *k) { key_down(k); }
+  void KeyUp(const char *k) { key_up(k); }
 
   void Reload() { reload(); }
   void Stop() { stop(); }
   bool LoadUri(hstring uri) { return load_uri(*hstring2char(uri)); }
   void ChangeVisibility(bool visible) { change_visibility(visible); }
   bool IsUriValid(hstring uri) { return is_uri_valid(*hstring2char(uri)); }
+  void GoHome();
   void Scroll(float dx, float dy, float x, float y) {
     scroll((int32_t)dx, (int32_t)dy, (int32_t)x, (int32_t)y);
   }
@@ -85,6 +88,7 @@ public:
   void ContextMenuClosed(CContextMenuResult res, unsigned int idx) {
     on_context_menu_closed(res, idx);
   }
+  void IMEDismissed() { ime_dismissed(); }
 
 private:
   ServoDelegate &mDelegate;
@@ -107,8 +111,10 @@ public:
   virtual void OnServoURLChanged(hstring) = 0;
   virtual bool OnServoAllowNavigation(hstring) = 0;
   virtual void OnServoAnimatingChanged(bool) = 0;
-  virtual void OnServoIMEStateChanged(bool) = 0;
-  virtual void OnServoDevtoolsStarted(bool, const unsigned int) = 0;
+  virtual void OnServoIMEShow(hstring text, int32_t x, int32_t y, int32_t width,
+                              int32_t height) = 0;
+  virtual void OnServoIMEHide() = 0;
+  virtual void OnServoDevtoolsStarted(bool, const unsigned int, hstring) = 0;
   virtual void OnServoMediaSessionMetadata(hstring, hstring, hstring) = 0;
   virtual void OnServoMediaSessionPlaybackStateChange(int) = 0;
   virtual void OnServoPromptAlert(hstring, bool) = 0;

@@ -72,6 +72,7 @@ use crate::task_source::{TaskSource, TaskSourceName};
 use crate::timers::{IsInterval, TimerCallback};
 use crate::webdriver_handlers::jsval_to_webdriver;
 use app_units::Au;
+use backtrace::Backtrace;
 use base64;
 use bluetooth_traits::BluetoothRequest;
 use canvas_traits::webgl::WebGLChan;
@@ -89,7 +90,7 @@ use js::jsapi::Heap;
 use js::jsapi::JSAutoRealm;
 use js::jsapi::JSObject;
 use js::jsapi::JSPROP_ENUMERATE;
-use js::jsapi::{GCReason, JS_GC};
+use js::jsapi::{GCReason, StackFormat, JS_GC};
 use js::jsval::UndefinedValue;
 use js::jsval::{JSVal, NullValue};
 use js::rust::wrappers::JS_DefineProperty;
@@ -118,6 +119,7 @@ use script_traits::{
 };
 use script_traits::{TimerSchedulerMsg, WebrenderIpcSender, WindowSizeData, WindowSizeType};
 use selectors::attr::CaseSensitivity;
+use servo_arc::Arc as ServoArc;
 use servo_geometry::{f32_rect_to_au_rect, MaxRect};
 use servo_url::{ImmutableOrigin, MutableOrigin, ServoUrl};
 use std::borrow::Cow;
@@ -136,7 +138,8 @@ use style::dom::OpaqueNode;
 use style::error_reporting::{ContextualParseError, ParseErrorReporter};
 use style::media_queries;
 use style::parser::ParserContext as CssParserContext;
-use style::properties::PropertyId;
+use style::properties::style_structs::Font;
+use style::properties::{PropertyId, ShorthandId};
 use style::selector_parser::PseudoElement;
 use style::str::HTML_SPACE_CHARACTERS;
 use style::stylesheets::CssRuleType;
@@ -222,6 +225,9 @@ pub struct Window {
     js_runtime: DomRefCell<Option<Rc<Runtime>>>,
 
     /// A handle for communicating messages to the layout thread.
+    ///
+    /// This channel shouldn't be accessed directly, but through `Window::layout_chan()`,
+    /// which returns `None` if there's no layout thread anymore.
     #[ignore_malloc_size_of = "channels are hard"]
     layout_chan: Sender<Msg>,
 
@@ -394,7 +400,7 @@ impl Window {
             let flag = ignore_flags
                 .entry(task_source_name)
                 .or_insert(Default::default());
-            flag.store(true, Ordering::Relaxed);
+            flag.store(true, Ordering::SeqCst);
         }
     }
 
@@ -1077,6 +1083,20 @@ impl WindowMethods for Window {
     }
 
     #[allow(unsafe_code)]
+    fn Js_backtrace(&self) {
+        unsafe {
+            capture_stack!(in(*self.get_cx()) let stack);
+            let js_stack = stack.and_then(|s| s.as_string(None, StackFormat::SpiderMonkey));
+            let rust_stack = Backtrace::new();
+            println!(
+                "Current JS stack:\n{}\nCurrent Rust stack:\n{:?}",
+                js_stack.unwrap_or(String::new()),
+                rust_stack
+            );
+        }
+    }
+
+    #[allow(unsafe_code)]
     fn WebdriverCallback(&self, cx: JSContext, val: HandleValue) {
         let rv = unsafe { jsval_to_webdriver(*cx, &self.globalscope, val) };
         let opt_chan = self.webdriver_script_chan.borrow_mut().take();
@@ -1426,7 +1446,7 @@ impl Window {
                 .entry(task_source_name)
                 .or_insert(Default::default());
             let cancelled = mem::replace(&mut *flag, Default::default());
-            cancelled.store(true, Ordering::Relaxed);
+            cancelled.store(true, Ordering::SeqCst);
         }
     }
 
@@ -1439,7 +1459,7 @@ impl Window {
             .entry(task_source_name)
             .or_insert(Default::default());
         let cancelled = mem::replace(&mut *flag, Default::default());
-        cancelled.store(true, Ordering::Relaxed);
+        cancelled.store(true, Ordering::SeqCst);
     }
 
     pub fn clear_js_runtime(&self) {
@@ -1551,12 +1571,15 @@ impl Window {
         // TODO Step 1
         // TODO(mrobinson, #18709): Add smooth scrolling support to WebRender so that we can
         // properly process ScrollBehavior here.
-        self.layout_chan
-            .send(Msg::UpdateScrollStateFromScript(ScrollState {
-                scroll_id,
-                scroll_offset: Vector2D::new(-x, -y),
-            }))
-            .unwrap();
+        match self.layout_chan() {
+            Some(chan) => chan
+                .send(Msg::UpdateScrollStateFromScript(ScrollState {
+                    scroll_id,
+                    scroll_offset: Vector2D::new(-x, -y),
+                }))
+                .unwrap(),
+            None => warn!("Layout channel unavailable"),
+        }
     }
 
     pub fn update_viewport_for_scroll(&self, x: f32, y: f32) {
@@ -1663,7 +1686,8 @@ impl Window {
         // If this reflow is for display, ensure webgl canvases are composited with
         // up-to-date contents.
         if for_display {
-            document.flush_dirty_canvases();
+            document.flush_dirty_webgpu_canvases();
+            document.flush_dirty_webgl_canvases();
         }
 
         let pending_restyles = document.drain_pending_restyles();
@@ -1693,9 +1717,12 @@ impl Window {
             animations: document.animations().sets.clone(),
         };
 
-        self.layout_chan
-            .send(Msg::Reflow(reflow))
-            .expect("Layout thread disconnected.");
+        match self.layout_chan() {
+            Some(layout_chan) => layout_chan
+                .send(Msg::Reflow(reflow))
+                .expect("Layout thread disconnected"),
+            None => return false,
+        };
 
         debug!("script: layout forked");
 
@@ -1845,6 +1872,18 @@ impl Window {
             ReflowGoal::LayoutQuery(query_msg, time::precise_time_ns()),
             ReflowReason::Query,
         )
+    }
+
+    pub fn resolved_font_style_query(&self, node: &Node, value: String) -> Option<ServoArc<Font>> {
+        let id = PropertyId::Shorthand(ShorthandId::Font);
+        if !self.layout_reflow(QueryMsg::ResolvedFontStyleQuery(
+            node.to_trusted_node_address(),
+            id,
+            value,
+        )) {
+            return None;
+        }
+        self.layout_rpc.resolved_font_style()
     }
 
     pub fn layout(&self) -> &dyn LayoutRPC {
@@ -2087,8 +2126,12 @@ impl Window {
         self.Document().url()
     }
 
-    pub fn layout_chan(&self) -> &Sender<Msg> {
-        &self.layout_chan
+    pub fn layout_chan(&self) -> Option<&Sender<Msg>> {
+        if self.is_alive() {
+            Some(&self.layout_chan)
+        } else {
+            None
+        }
     }
 
     pub fn windowproxy_handler(&self) -> WindowProxyHandler {
@@ -2500,6 +2543,7 @@ fn debug_reflow_events(id: PipelineId, reflow_goal: &ReflowGoal, reason: &Reflow
             &QueryMsg::NodeScrollGeometryQuery(_n) => "\tNodeScrollGeometryQuery",
             &QueryMsg::NodeScrollIdQuery(_n) => "\tNodeScrollIdQuery",
             &QueryMsg::ResolvedStyleQuery(_, _, _) => "\tResolvedStyleQuery",
+            &QueryMsg::ResolvedFontStyleQuery(..) => "\nResolvedFontStyleQuery",
             &QueryMsg::OffsetParentQuery(_n) => "\tOffsetParentQuery",
             &QueryMsg::StyleQuery => "\tStyleQuery",
             &QueryMsg::TextIndexQuery(..) => "\tTextIndexQuery",

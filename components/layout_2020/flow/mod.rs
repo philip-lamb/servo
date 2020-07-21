@@ -8,7 +8,9 @@ use crate::cell::ArcRefCell;
 use crate::context::LayoutContext;
 use crate::flow::float::{FloatBox, FloatContext};
 use crate::flow::inline::InlineFormattingContext;
-use crate::formatting_contexts::{IndependentFormattingContext, IndependentLayout, NonReplacedIFC};
+use crate::formatting_contexts::{
+    IndependentFormattingContext, IndependentLayout, NonReplacedFormattingContext,
+};
 use crate::fragments::{
     AbsoluteOrFixedPositionedFragment, AnonymousFragment, BoxFragment, CollapsedBlockMargins,
     CollapsedMargin, Fragment, Tag,
@@ -16,11 +18,13 @@ use crate::fragments::{
 use crate::geom::flow_relative::{Rect, Sides, Vec2};
 use crate::positioned::{AbsolutelyPositionedBox, PositioningContext};
 use crate::replaced::ReplacedContent;
+use crate::sizing::{self, ContentSizes};
 use crate::style_ext::{ComputedValuesExt, PaddingBorderMargin};
 use crate::ContainingBlock;
 use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
 use rayon_croissant::ParallelIteratorExt;
 use servo_arc::Arc;
+use style::logical_geometry::WritingMode;
 use style::properties::ComputedValues;
 use style::values::computed::{Length, LengthOrAuto};
 use style::Zero;
@@ -128,6 +132,25 @@ impl BlockContainer {
                 containing_block,
                 tree_rank,
             ),
+        }
+    }
+
+    pub(super) fn inline_content_sizes(
+        &self,
+        layout_context: &LayoutContext,
+        writing_mode: WritingMode,
+    ) -> ContentSizes {
+        match &self {
+            Self::BlockLevelBoxes(boxes) => boxes
+                .par_iter()
+                .map(|box_| {
+                    box_.borrow_mut()
+                        .inline_content_sizes(layout_context, writing_mode)
+                })
+                .reduce(ContentSizes::zero, ContentSizes::max),
+            Self::InlineFormattingContext(context) => {
+                context.inline_content_sizes(layout_context, writing_mode)
+            },
         }
     }
 }
@@ -288,32 +311,43 @@ impl BlockLevelBox {
                     )
                 },
             )),
-            BlockLevelBox::Independent(contents) => {
-                Fragment::Box(positioning_context.layout_maybe_position_relative_fragment(
-                    layout_context,
-                    containing_block,
-                    &contents.style,
-                    |positioning_context| match contents.as_replaced() {
-                        Ok(replaced) => layout_in_flow_replaced_block_level(
-                            containing_block,
-                            contents.tag,
-                            &contents.style,
-                            replaced,
-                        ),
-                        Err(non_replaced) => layout_in_flow_non_replaced_block_level(
-                            layout_context,
-                            positioning_context,
-                            containing_block,
-                            contents.tag,
-                            &contents.style,
-                            NonReplacedContents::EstablishesAnIndependentFormattingContext(
-                                non_replaced,
-                            ),
-                            tree_rank,
-                            float_context,
-                        ),
-                    },
-                ))
+            BlockLevelBox::Independent(independent) => match independent {
+                IndependentFormattingContext::Replaced(replaced) => {
+                    Fragment::Box(positioning_context.layout_maybe_position_relative_fragment(
+                        layout_context,
+                        containing_block,
+                        &replaced.style,
+                        |_positioning_context| {
+                            layout_in_flow_replaced_block_level(
+                                containing_block,
+                                replaced.tag,
+                                &replaced.style,
+                                &replaced.contents,
+                            )
+                        },
+                    ))
+                },
+                IndependentFormattingContext::NonReplaced(non_replaced) => {
+                    Fragment::Box(positioning_context.layout_maybe_position_relative_fragment(
+                        layout_context,
+                        containing_block,
+                        &non_replaced.style,
+                        |positioning_context| {
+                            layout_in_flow_non_replaced_block_level(
+                                layout_context,
+                                positioning_context,
+                                containing_block,
+                                non_replaced.tag,
+                                &non_replaced.style,
+                                NonReplacedContents::EstablishesAnIndependentFormattingContext(
+                                    non_replaced,
+                                ),
+                                tree_rank,
+                                float_context,
+                            )
+                        },
+                    ))
+                },
             },
             BlockLevelBox::OutOfFlowAbsolutelyPositionedBox(box_) => {
                 let hoisted_box = AbsolutelyPositionedBox::to_hoisted(
@@ -326,7 +360,7 @@ impl BlockLevelBox {
                 positioning_context.push(hoisted_box);
                 Fragment::AbsoluteOrFixedPositioned(AbsoluteOrFixedPositionedFragment {
                     hoisted_fragment,
-                    position: box_.borrow().contents.style.clone_position(),
+                    position: box_.borrow().context.style().clone_position(),
                 })
             },
             BlockLevelBox::OutOfFlowFloatBox(_box_) => {
@@ -337,11 +371,32 @@ impl BlockLevelBox {
             },
         }
     }
+
+    fn inline_content_sizes(
+        &mut self,
+        layout_context: &LayoutContext,
+        containing_block_writing_mode: WritingMode,
+    ) -> ContentSizes {
+        match self {
+            Self::SameFormattingContextBlock {
+                style, contents, ..
+            } => sizing::outer_inline(style, containing_block_writing_mode, || {
+                contents.inline_content_sizes(layout_context, style.writing_mode)
+            }),
+            Self::Independent(independent) => independent
+                .outer_inline_content_sizes(layout_context, containing_block_writing_mode),
+            BlockLevelBox::OutOfFlowAbsolutelyPositionedBox(_) => ContentSizes::zero(),
+            BlockLevelBox::OutOfFlowFloatBox(_box_) => {
+                // TODO: Actually implement that.
+                ContentSizes::zero()
+            },
+        }
+    }
 }
 
 enum NonReplacedContents<'a> {
     SameFormattingContextBlock(&'a BlockContainer),
-    EstablishesAnIndependentFormattingContext(NonReplacedIFC<'a>),
+    EstablishesAnIndependentFormattingContext(&'a NonReplacedFormattingContext),
 }
 
 /// https://drafts.csswg.org/css2/visudet.html#blockwidth

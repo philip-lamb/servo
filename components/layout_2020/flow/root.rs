@@ -22,7 +22,6 @@ use crate::geom::{PhysicalPoint, PhysicalRect, PhysicalSize};
 use crate::positioned::AbsolutelyPositionedBox;
 use crate::positioned::PositioningContext;
 use crate::replaced::ReplacedContent;
-use crate::sizing::ContentSizesRequest;
 use crate::style_ext::ComputedValuesExt;
 use crate::style_ext::{Display, DisplayGeneratingBox, DisplayInside};
 use crate::wrapper::GetStyleAndLayoutData;
@@ -35,8 +34,10 @@ use gfx_traits::print_tree::PrintTree;
 use script_layout_interface::wrapper_traits::LayoutNode;
 use script_layout_interface::{LayoutElementType, LayoutNodeType};
 use servo_arc::Arc;
+use style::animation::AnimationSetKey;
 use style::dom::OpaqueNode;
 use style::properties::ComputedValues;
+use style::selector_parser::PseudoElement;
 use style::values::computed::Length;
 use style_traits::CSSPixel;
 
@@ -290,7 +291,6 @@ fn construct_for_root_element<'dom>(
                 &info,
                 display_inside,
                 contents,
-                ContentSizesRequest::None,
                 propagated_text_decoration_line,
             )),
         )
@@ -446,11 +446,14 @@ impl FragmentTree {
         })
     }
 
-    pub fn remove_nodes_in_fragment_tree_from_set(&self, set: &mut FxHashSet<OpaqueNode>) {
+    pub fn remove_nodes_in_fragment_tree_from_set(&self, set: &mut FxHashSet<AnimationSetKey>) {
         self.find(|fragment, _| {
-            if let Some(tag) = fragment.tag().as_ref() {
-                set.remove(&tag.node());
-            }
+            let (node, pseudo) = match fragment.tag()? {
+                Tag::Node(node) => (node, None),
+                Tag::BeforePseudo(node) => (node, Some(PseudoElement::Before)),
+                Tag::AfterPseudo(node) => (node, Some(PseudoElement::After)),
+            };
+            set.remove(&AnimationSetKey::new(node, pseudo));
             None::<()>
         });
     }

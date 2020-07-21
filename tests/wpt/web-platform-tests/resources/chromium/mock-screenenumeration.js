@@ -20,8 +20,11 @@ var ScreenEnumerationTest = (() => {
       this.success_ = false;
     }
 
-    setIds(internalId, primaryId) {
+    setInternalId(internalId) {
       this.internalId_ = internalId;
+    }
+
+    setPrimaryId(primaryId) {
       this.primaryId_ = primaryId;
     }
 
@@ -33,12 +36,30 @@ var ScreenEnumerationTest = (() => {
       this.displays_.push(display);
     }
 
+    removeDisplay(id) {
+      for (var i = 0; i < this.displays_.length; i++) {
+        if (this.displays_[i].id === id)
+          this.displays_.splice(i,1);
+      }
+    }
+
     async getDisplays() {
+      if (!this.success_)
+        return Promise.resolve({ result: undefined, });
+      let value = new blink.mojom.Displays();
+      value.displays = this.displays_;
+      value.internalId = this.internalId_;
+      value.primaryId = this.primaryId_;
+      return Promise.resolve({ result: value, });
+    }
+
+    async hasMultipleDisplays() {
+      if (!this.success_)
+        return Promise.resolve({ result: blink.mojom.MultipleDisplays.kError });
       return Promise.resolve({
-        displays: this.displays_,
-        internalId: this.internalId_,
-        primaryId: this.primaryId_,
-        success: this.success_,
+        result: this.displays_.length > 1
+            ? blink.mojom.MultipleDisplays.kTrue
+            : blink.mojom.MultipleDisplays.kFalse,
       });
     }
   }

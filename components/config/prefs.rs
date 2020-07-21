@@ -133,8 +133,10 @@ mod gen {
                         enabled: bool,
                     }
                 },
+                canvas_capture: {
+                    enabled: bool,
+                },
                 canvas_text: {
-                    #[serde(rename = "dom.canvas-text.enabled")]
                     enabled: bool,
                 },
                 composition_event: {
@@ -187,6 +189,9 @@ mod gen {
                 serviceworker: {
                     enabled: bool,
                     timeout_seconds: i64,
+                },
+                servo_helpers: {
+                    enabled: bool,
                 },
                 servoparser: {
                     async_html_tokenizer: {
@@ -254,6 +259,9 @@ mod gen {
                     enabled: bool,
                 },
                 webrtc: {
+                    transceiver: {
+                        enabled: bool,
+                    },
                     #[serde(default)]
                     enabled: bool,
                 },
@@ -272,6 +280,8 @@ mod gen {
                         left_right: bool,
                         #[serde(rename = "dom.webxr.glwindow.red-cyan")]
                         red_cyan: bool,
+                        spherical: bool,
+                        cubemap: bool,
                     },
                     hands: {
                         #[serde(default)]
@@ -279,7 +289,8 @@ mod gen {
                     },
                     layers: {
                         enabled: bool,
-                    }
+                    },
+                    sessionavailable: bool,
                 },
                 worklet: {
                     blockingsleep: {

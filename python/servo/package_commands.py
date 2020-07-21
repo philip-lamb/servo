@@ -30,9 +30,6 @@ from mach.decorators import (
     Command,
 )
 from mach.registrar import Registrar
-# Note: mako cannot be imported at the top level because it breaks mach bootstrap
-sys.path.append(path.join(path.dirname(__file__), "..", "..",
-                          "components", "style", "properties", "Mako-1.1.2-py2.py3-none-any.whl"))
 
 from servo.command_base import (
     archive_deterministically,
@@ -42,8 +39,12 @@ from servo.command_base import (
     is_macosx,
     is_windows,
 )
+from servo.gstreamer import macos_dylibs
 from servo.util import delete
 
+# Note: mako cannot be imported at the top level because it breaks mach bootstrap
+sys.path.append(path.join(path.dirname(__file__), "..", "..",
+                          "components", "style", "properties", "Mako-1.1.2-py2.py3-none-any.whl"))
 
 PACKAGES = {
     'android': [
@@ -96,18 +97,18 @@ else:
 
 def get_taskcluster_secret(name):
     url = (
-        os.environ.get("TASKCLUSTER_PROXY_URL", "http://taskcluster") +
-        "/api/secrets/v1/secret/project/servo/" +
-        name
+        os.environ.get("TASKCLUSTER_PROXY_URL", "http://taskcluster")
+        + "/api/secrets/v1/secret/project/servo/"
+        + name
     )
     return json.load(urllib.request.urlopen(url))["secret"]
 
 
 def otool(s):
     o = subprocess.Popen(['/usr/bin/otool', '-L', s], stdout=subprocess.PIPE)
-    for l in o.stdout:
-        if l[0] == '\t':
-            yield l.split(' ', 1)[0][1:]
+    for line in o.stdout:
+        if line[0] == '\t':
+            yield line.split(' ', 1)[0][1:]
 
 
 def listfiles(directory):
@@ -139,6 +140,7 @@ def copy_dependencies(binary_path, lib_path):
 
     # Update binary libraries
     binary_dependencies = set(otool(binary_path))
+    binary_dependencies = binary_dependencies.union(macos_dylibs())
     change_non_system_libraries_path(binary_dependencies, relative_path, binary_path)
 
     # Update dependencies libraries
@@ -651,7 +653,9 @@ class PackageCommands(CommandBase):
                 'Key': package_upload_key,
             }
             s3.copy(copy_source, BUCKET, latest_upload_key)
-            s3.upload_fileobj(package_hash_fileobj, BUCKET, latest_hash_upload_key)
+            s3.upload_fileobj(
+                package_hash_fileobj, BUCKET, latest_hash_upload_key, ExtraArgs={'ContentType': 'text/plain'}
+            )
 
         def update_maven(directory):
             (aws_access_key, aws_secret_access_key) = get_s3_secret()
@@ -779,7 +783,7 @@ def setup_uwp_signing(ms_app_store, publisher):
         print("Packaging on TC. Using secret certificate")
         pfx = get_taskcluster_secret("windows-codesign-cert/latest")["pfx"]
         open("servo.pfx", "wb").write(base64.b64decode(pfx["base64"]))
-        run_powershell_cmd('Import-PfxCertificate -FilePath .\servo.pfx -CertStoreLocation Cert:\CurrentUser\My')
+        run_powershell_cmd('Import-PfxCertificate -FilePath .\\servo.pfx -CertStoreLocation Cert:\\CurrentUser\\My')
         os.remove("servo.pfx")
 
     # Powershell command that lists all certificates for publisher
@@ -794,7 +798,7 @@ def setup_uwp_signing(ms_app_store, publisher):
         # PowerShell command that creates and install signing certificate for publisher
         cmd = '(New-SelfSignedCertificate -Type Custom -Subject ' + publisher + \
               ' -FriendlyName "Allizom Signing Certificate (temporary)"' + \
-              ' -KeyUsage DigitalSignature -CertStoreLocation "Cert:\CurrentUser\My"' + \
+              ' -KeyUsage DigitalSignature -CertStoreLocation "Cert:\\CurrentUser\\My"' + \
               ' -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3", "2.5.29.19={text}")).Thumbprint'
         thumbprint = run_powershell_cmd(cmd)
     elif len(certs) > 1:

@@ -1,21 +1,28 @@
 def main(request, response):
-    coop = request.GET.first("coop")
-    coep = request.GET.first("coep")
-    redirect = request.GET.first("redirect", None)
-    if coop != "":
-        response.headers.set("Cross-Origin-Opener-Policy", coop)
-    if coep != "":
-        response.headers.set("Cross-Origin-Embedder-Policy", coep)
-    if 'cache' in request.GET:
-        response.headers.set('Cache-Control', 'max-age=3600')
+    coop = request.GET.first(b"coop")
+    coopReportOnly = request.GET.first(b"coop-report-only") if b"coop-report-only" in request.GET else b""
+    coep = request.GET.first(b"coep")
+    coepReportOnly = request.GET.first(b"coep-report-only") if b"coep-report-only" in request.GET else b""
+    redirect = request.GET.first(b"redirect", None)
+    if coop != b"":
+        response.headers.set(b"Cross-Origin-Opener-Policy", coop)
+    if coop != b"":
+        response.headers.set(b"Cross-Origin-Opener-Policy-Report-Only", coopReportOnly)
+    if coep != b"":
+        response.headers.set(b"Cross-Origin-Embedder-Policy", coep)
+    if coep != b"":
+        response.headers.set(b"Cross-Origin-Embedder-Policy-Report-Only", coepReportOnly)
+    if b'cache' in request.GET:
+        response.headers.set(b'Cache-Control', b'max-age=3600')
+    host = request.url_parts[1]
 
     if redirect != None:
         response.status = 302
-        response.headers.set("Location", redirect)
+        response.headers.set(b"Location", redirect)
         return
 
     # This uses an <iframe> as BroadcastChannel is same-origin bound.
-    response.content = """
+    response.content = b"""
 <!doctype html>
 <meta charset=utf-8>
 <script src="/common/get-host-info.sub.js"></script>

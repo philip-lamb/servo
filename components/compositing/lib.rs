@@ -3,7 +3,6 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 #![deny(unsafe_code)]
-#![feature(track_caller)]
 
 #[macro_use]
 extern crate log;
@@ -110,6 +109,8 @@ pub enum ConstellationMsg {
     MediaSessionAction(MediaSessionActionType),
     /// Toggle browser visibility.
     ChangeBrowserVisibility(TopLevelBrowsingContextId, bool),
+    /// Virtual keyboard was dismissed
+    IMEDismissed,
 }
 
 impl fmt::Debug for ConstellationMsg {
@@ -141,6 +142,7 @@ impl fmt::Debug for ConstellationMsg {
             ExitFullScreen(..) => "ExitFullScreen",
             MediaSessionAction(..) => "MediaSessionAction",
             ChangeBrowserVisibility(..) => "ChangeBrowserVisibility",
+            IMEDismissed => "IMEDismissed",
         };
         write!(formatter, "ConstellationMsg::{}", variant)
     }

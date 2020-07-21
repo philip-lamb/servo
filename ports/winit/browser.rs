@@ -498,7 +498,7 @@ where
                     let permission_state = prompt_user(prompt);
                     let _ = sender.send(permission_state);
                 }
-                EmbedderMsg::ShowIME(_kind) => {
+                EmbedderMsg::ShowIME(_kind, _text, _rect) => {
                     debug!("ShowIME received");
                 },
                 EmbedderMsg::HideIME => {
@@ -515,7 +515,7 @@ where
                     debug!("MediaSessionEvent received");
                     // TODO(ferjm): MediaSession support for winit based browsers.
                 },
-                EmbedderMsg::OnDevtoolsStarted(port) => {
+                EmbedderMsg::OnDevtoolsStarted(port, _token) => {
                     match port {
                         Ok(p) => info!("Devtools Server running on port {}", p),
                         Err(()) => error!("Error running devtools server"),

@@ -5,41 +5,38 @@
 use crate::dom::bindings::cell::DomRefCell;
 use crate::dom::bindings::codegen::Bindings::GPUTextureViewBinding::GPUTextureViewMethods;
 use crate::dom::bindings::reflector::{reflect_dom_object, Reflector};
-use crate::dom::bindings::root::DomRoot;
-use crate::dom::bindings::str::DOMString;
+use crate::dom::bindings::root::{Dom, DomRoot};
+use crate::dom::bindings::str::USVString;
 use crate::dom::globalscope::GlobalScope;
+use crate::dom::gputexture::GPUTexture;
 use dom_struct::dom_struct;
-use std::cell::Cell;
-use webgpu::{WebGPUDevice, WebGPUTextureView};
+use webgpu::WebGPUTextureView;
 
 #[dom_struct]
 pub struct GPUTextureView {
     reflector_: Reflector,
-    label: DomRefCell<Option<DOMString>>,
+    label: DomRefCell<Option<USVString>>,
     texture_view: WebGPUTextureView,
-    device: WebGPUDevice,
-    valid: Cell<bool>,
+    texture: Dom<GPUTexture>,
 }
 
 impl GPUTextureView {
-    fn new_inherited(texture_view: WebGPUTextureView, device: WebGPUDevice, valid: bool) -> Self {
+    fn new_inherited(texture_view: WebGPUTextureView, texture: &GPUTexture) -> GPUTextureView {
         Self {
             reflector_: Reflector::new(),
-            device,
+            texture: Dom::from_ref(texture),
             label: DomRefCell::new(None),
             texture_view,
-            valid: Cell::new(valid),
         }
     }
 
     pub fn new(
         global: &GlobalScope,
         texture_view: WebGPUTextureView,
-        device: WebGPUDevice,
-        valid: bool,
-    ) -> DomRoot<Self> {
+        texture: &GPUTexture,
+    ) -> DomRoot<GPUTextureView> {
         reflect_dom_object(
-            Box::new(GPUTextureView::new_inherited(texture_view, device, valid)),
+            Box::new(GPUTextureView::new_inherited(texture_view, texture)),
             global,
         )
     }
@@ -53,12 +50,12 @@ impl GPUTextureView {
 
 impl GPUTextureViewMethods for GPUTextureView {
     /// https://gpuweb.github.io/gpuweb/#dom-gpuobjectbase-label
-    fn GetLabel(&self) -> Option<DOMString> {
+    fn GetLabel(&self) -> Option<USVString> {
         self.label.borrow().clone()
     }
 
     /// https://gpuweb.github.io/gpuweb/#dom-gpuobjectbase-label
-    fn SetLabel(&self, value: Option<DOMString>) {
+    fn SetLabel(&self, value: Option<USVString>) {
         *self.label.borrow_mut() = value;
     }
 }

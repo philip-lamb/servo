@@ -15,6 +15,9 @@ use crate::dom::bindings::codegen::Bindings::DocumentBinding::{
 };
 use crate::dom::bindings::codegen::Bindings::EventBinding::EventBinding::EventMethods;
 use crate::dom::bindings::codegen::Bindings::HTMLIFrameElementBinding::HTMLIFrameElementBinding::HTMLIFrameElementMethods;
+use crate::dom::bindings::codegen::Bindings::HTMLInputElementBinding::HTMLInputElementMethods;
+use crate::dom::bindings::codegen::Bindings::HTMLTextAreaElementBinding::HTMLTextAreaElementMethods;
+use crate::dom::bindings::codegen::Bindings::NavigatorBinding::NavigatorBinding::NavigatorMethods;
 use crate::dom::bindings::codegen::Bindings::NodeBinding::NodeMethods;
 use crate::dom::bindings::codegen::Bindings::NodeFilterBinding::NodeFilter;
 use crate::dom::bindings::codegen::Bindings::PerformanceBinding::PerformanceMethods;
@@ -53,6 +56,7 @@ use crate::dom::event::{Event, EventBubbles, EventCancelable, EventDefault, Even
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::focusevent::FocusEvent;
 use crate::dom::globalscope::GlobalScope;
+use crate::dom::gpucanvascontext::{GPUCanvasContext, WebGPUContextId};
 use crate::dom::hashchangeevent::HashChangeEvent;
 use crate::dom::htmlanchorelement::HTMLAnchorElement;
 use crate::dom::htmlareaelement::HTMLAreaElement;
@@ -66,7 +70,9 @@ use crate::dom::htmlheadelement::HTMLHeadElement;
 use crate::dom::htmlhtmlelement::HTMLHtmlElement;
 use crate::dom::htmliframeelement::HTMLIFrameElement;
 use crate::dom::htmlimageelement::HTMLImageElement;
+use crate::dom::htmlinputelement::HTMLInputElement;
 use crate::dom::htmlscriptelement::{HTMLScriptElement, ScriptResult};
+use crate::dom::htmltextareaelement::HTMLTextAreaElement;
 use crate::dom::htmltitleelement::HTMLTitleElement;
 use crate::dom::keyboardevent::KeyboardEvent;
 use crate::dom::location::Location;
@@ -105,14 +111,14 @@ use crate::stylesheet_set::StylesheetSetRef;
 use crate::task::TaskBox;
 use crate::task_source::{TaskSource, TaskSourceName};
 use crate::timers::OneshotTimerCallback;
-use canvas_traits::webgl::{self, SwapChainId, WebGLContextId, WebGLMsg};
+use canvas_traits::webgl::{self, WebGLContextId, WebGLMsg};
 use content_security_policy::{self as csp, CspList};
 use cookie::Cookie;
 use devtools_traits::ScriptToDevtoolsControlMsg;
 use dom_struct::dom_struct;
 use embedder_traits::EmbedderMsg;
 use encoding_rs::{Encoding, UTF_8};
-use euclid::default::Point2D;
+use euclid::default::{Point2D, Rect, Size2D};
 use html5ever::{LocalName, Namespace, QualName};
 use hyper_serde::Serde;
 use ipc_channel::ipc::{self, IpcSender};
@@ -167,6 +173,7 @@ use style::stylesheet_set::DocumentStylesheetSet;
 use style::stylesheets::{Origin, OriginSet, Stylesheet};
 use url::Host;
 use uuid::Uuid;
+use webrender_api::units::DeviceIntRect;
 
 /// The number of times we are allowed to see spurious `requestAnimationFrame()` calls before
 /// falling back to fake ones.
@@ -202,6 +209,16 @@ impl FireMouseEventType {
 pub enum IsHTMLDocument {
     HTMLDocument,
     NonHTMLDocument,
+}
+
+#[derive(JSTraceable, MallocSizeOf)]
+#[unrooted_must_root_lint::must_root]
+enum FocusTransaction {
+    /// No focus operation is in effect.
+    NotInTransaction,
+    /// A focus operation is in effect.
+    /// Contains the element that has most recently requested focus for itself.
+    InTransaction(Option<Dom<Element>>),
 }
 
 /// <https://dom.spec.whatwg.org/#document>
@@ -243,8 +260,8 @@ pub struct Document {
     ready_state: Cell<DocumentReadyState>,
     /// Whether the DOMContentLoaded event has already been dispatched.
     domcontentloaded_dispatched: Cell<bool>,
-    /// The element that has most recently requested focus for itself.
-    possibly_focused: MutNullableDom<Element>,
+    /// The state of this document's focus transaction.
+    focus_transaction: DomRefCell<FocusTransaction>,
     /// The element that currently has the document focus context.
     focused: MutNullableDom<Element>,
     /// The script element that is currently executing.
@@ -377,6 +394,8 @@ pub struct Document {
     media_controls: DomRefCell<HashMap<String, Dom<ShadowRoot>>>,
     /// List of all WebGL context IDs that need flushing.
     dirty_webgl_contexts: DomRefCell<HashMap<WebGLContextId, Dom<WebGLRenderingContext>>>,
+    /// List of all WebGPU context IDs that need flushing.
+    dirty_webgpu_contexts: DomRefCell<HashMap<WebGPUContextId, Dom<GPUCanvasContext>>>,
     /// https://html.spec.whatwg.org/multipage/#concept-document-csp-list
     #[ignore_malloc_size_of = "Defined in rust-content-security-policy"]
     csp_list: DomRefCell<Option<CspList>>,
@@ -786,10 +805,10 @@ impl Document {
         self.quirks_mode.set(mode);
 
         if mode == QuirksMode::Quirks {
-            self.window
-                .layout_chan()
-                .send(Msg::SetQuirksMode(mode))
-                .unwrap();
+            match self.window.layout_chan() {
+                Some(chan) => chan.send(Msg::SetQuirksMode(mode)).unwrap(),
+                None => warn!("Layout channel unavailable"),
+            }
         }
     }
 
@@ -984,9 +1003,15 @@ impl Document {
     pub fn set_ready_state(&self, state: DocumentReadyState) {
         match state {
             DocumentReadyState::Loading => {
+                if self.window().is_top_level() {
+                    self.send_to_embedder(EmbedderMsg::LoadStart);
+                }
                 update_with_current_time_ms(&self.dom_loading);
             },
             DocumentReadyState::Complete => {
+                if self.window().is_top_level() {
+                    self.send_to_embedder(EmbedderMsg::LoadComplete);
+                }
                 update_with_current_time_ms(&self.dom_complete);
             },
             DocumentReadyState::Interactive => update_with_current_time_ms(&self.dom_interactive),
@@ -1011,21 +1036,52 @@ impl Document {
 
     /// Initiate a new round of checking for elements requesting focus. The last element to call
     /// `request_focus` before `commit_focus_transaction` is called will receive focus.
-    pub fn begin_focus_transaction(&self) {
-        self.possibly_focused.set(None);
+    fn begin_focus_transaction(&self) {
+        *self.focus_transaction.borrow_mut() = FocusTransaction::InTransaction(Default::default());
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#focus-fixup-rule>
+    pub(crate) fn perform_focus_fixup_rule(&self, not_focusable: &Element) {
+        if Some(not_focusable) != self.focused.get().as_ref().map(|e| &**e) {
+            return;
+        }
+        self.request_focus(
+            self.GetBody().as_ref().map(|e| &*e.upcast()),
+            FocusType::Element,
+        )
     }
 
     /// Request that the given element receive focus once the current transaction is complete.
-    pub fn request_focus(&self, elem: &Element) {
-        if elem.is_focusable_area() {
-            self.possibly_focused.set(Some(elem))
+    /// If None is passed, then whatever element is currently focused will no longer be focused
+    /// once the transaction is complete.
+    pub(crate) fn request_focus(&self, elem: Option<&Element>, focus_type: FocusType) {
+        let implicit_transaction = matches!(
+            *self.focus_transaction.borrow(),
+            FocusTransaction::NotInTransaction
+        );
+        if implicit_transaction {
+            self.begin_focus_transaction();
+        }
+        if elem.map_or(true, |e| e.is_focusable_area()) {
+            *self.focus_transaction.borrow_mut() =
+                FocusTransaction::InTransaction(elem.map(Dom::from_ref));
+        }
+        if implicit_transaction {
+            self.commit_focus_transaction(focus_type);
         }
     }
 
     /// Reassign the focus context to the element that last requested focus during this
     /// transaction, or none if no elements requested it.
-    pub fn commit_focus_transaction(&self, focus_type: FocusType) {
-        if self.focused == self.possibly_focused.get().as_deref() {
+    fn commit_focus_transaction(&self, focus_type: FocusType) {
+        let possibly_focused = match *self.focus_transaction.borrow() {
+            FocusTransaction::NotInTransaction => unreachable!(),
+            FocusTransaction::InTransaction(ref elem) => {
+                elem.as_ref().map(|e| DomRoot::from_ref(&**e))
+            },
+        };
+        *self.focus_transaction.borrow_mut() = FocusTransaction::NotInTransaction;
+        if self.focused == possibly_focused.as_ref().map(|e| &**e) {
             return;
         }
         if let Some(ref elem) = self.focused.get() {
@@ -1040,7 +1096,7 @@ impl Document {
             }
         }
 
-        self.focused.set(self.possibly_focused.get().as_deref());
+        self.focused.set(possibly_focused.as_ref().map(|e| &**e));
 
         if let Some(ref elem) = self.focused.get() {
             elem.set_focus_state(true);
@@ -1055,7 +1111,23 @@ impl Document {
 
             // Notify the embedder to display an input method.
             if let Some(kind) = elem.input_method_type() {
-                self.send_to_embedder(EmbedderMsg::ShowIME(kind));
+                let rect = elem.upcast::<Node>().bounding_content_box_or_zero();
+                let rect = Rect::new(
+                    Point2D::new(rect.origin.x.to_px(), rect.origin.y.to_px()),
+                    Size2D::new(rect.size.width.to_px(), rect.size.height.to_px()),
+                );
+                let text = if let Some(input) = elem.downcast::<HTMLInputElement>() {
+                    Some((&input.Value()).to_string())
+                } else if let Some(textarea) = elem.downcast::<HTMLTextAreaElement>() {
+                    Some((&textarea.Value()).to_string())
+                } else {
+                    None
+                };
+                self.send_to_embedder(EmbedderMsg::ShowIME(
+                    kind,
+                    text,
+                    DeviceIntRect::from_untyped(&rect),
+                ));
             }
         }
     }
@@ -1140,6 +1212,7 @@ impl Document {
             }
 
             self.begin_focus_transaction();
+            self.request_focus(Some(&*el), FocusType::Element);
         }
 
         // https://w3c.github.io/uievents/#event-type-click
@@ -1647,6 +1720,13 @@ impl Document {
         }
 
         self.window.reflow(ReflowGoal::Full, ReflowReason::KeyEvent);
+    }
+
+    pub fn ime_dismissed(&self) {
+        self.request_focus(
+            self.GetBody().as_ref().map(|e| &*e.upcast()),
+            FocusType::Element,
+        )
     }
 
     pub fn dispatch_composition_event(
@@ -2195,6 +2275,17 @@ impl Document {
         // Step 11.
         // TODO: ready for post-load tasks.
 
+        // The dom.webxr.sessionavailable pref allows webxr
+        // content to immediately begin a session without waiting for a user gesture.
+        // TODO: should this only happen on the first document loaded?
+        // https://immersive-web.github.io/webxr/#user-intention
+        // https://github.com/immersive-web/navigation/issues/10
+        if pref!(dom.webxr.sessionavailable) {
+            if self.window.is_top_level() {
+                self.window.Navigator().Xr().dispatch_sessionavailable();
+            }
+        }
+
         // Step 12: completely loaded.
         // https://html.spec.whatwg.org/multipage/#completely-loaded
         // TODO: fully implement "completely loaded".
@@ -2643,20 +2734,20 @@ impl Document {
         }
     }
 
-    pub fn add_dirty_canvas(&self, context: &WebGLRenderingContext) {
+    pub fn add_dirty_webgl_canvas(&self, context: &WebGLRenderingContext) {
         self.dirty_webgl_contexts
             .borrow_mut()
             .entry(context.context_id())
             .or_insert_with(|| Dom::from_ref(context));
     }
 
-    pub fn flush_dirty_canvases(&self) {
+    pub fn flush_dirty_webgl_canvases(&self) {
         let dirty_context_ids: Vec<_> = self
             .dirty_webgl_contexts
             .borrow_mut()
             .drain()
             .filter(|(_, context)| context.onscreen())
-            .map(|(id, _)| SwapChainId::Context(id))
+            .map(|(id, _)| id)
             .collect();
 
         if dirty_context_ids.is_empty() {
@@ -2676,6 +2767,21 @@ impl Document {
             .send(WebGLMsg::SwapBuffers(dirty_context_ids, sender, time))
             .unwrap();
         receiver.recv().unwrap();
+    }
+
+    pub fn add_dirty_webgpu_canvas(&self, context: &GPUCanvasContext) {
+        self.dirty_webgpu_contexts
+            .borrow_mut()
+            .entry(context.context_id())
+            .or_insert_with(|| Dom::from_ref(context));
+    }
+
+    #[allow(unrooted_must_root)]
+    pub fn flush_dirty_webgpu_canvases(&self) {
+        self.dirty_webgpu_contexts
+            .borrow_mut()
+            .drain()
+            .for_each(|(_, context)| context.send_swap_chain_present());
     }
 
     // https://html.spec.whatwg.org/multipage/#dom-tree-accessors:supported-property-names
@@ -2980,7 +3086,7 @@ impl Document {
             stylesheet_list: MutNullableDom::new(None),
             ready_state: Cell::new(ready_state),
             domcontentloaded_dispatched: Cell::new(domcontentloaded_dispatched),
-            possibly_focused: Default::default(),
+            focus_transaction: DomRefCell::new(FocusTransaction::NotInTransaction),
             focused: Default::default(),
             current_script: Default::default(),
             pending_parsing_blocking_script: Default::default(),
@@ -3039,6 +3145,7 @@ impl Document {
             shadow_roots_styles_changed: Cell::new(false),
             media_controls: DomRefCell::new(HashMap::new()),
             dirty_webgl_contexts: DomRefCell::new(HashMap::new()),
+            dirty_webgpu_contexts: DomRefCell::new(HashMap::new()),
             csp_list: DomRefCell::new(None),
             selection: MutNullableDom::new(None),
             animation_timeline: if pref!(layout.animations.test.enabled) {
@@ -3636,13 +3743,15 @@ impl Document {
             })
             .cloned();
 
-        self.window
-            .layout_chan()
-            .send(Msg::AddStylesheet(
-                sheet.clone(),
-                insertion_point.as_ref().map(|s| s.sheet.clone()),
-            ))
-            .unwrap();
+        match self.window.layout_chan() {
+            Some(chan) => chan
+                .send(Msg::AddStylesheet(
+                    sheet.clone(),
+                    insertion_point.as_ref().map(|s| s.sheet.clone()),
+                ))
+                .unwrap(),
+            None => return warn!("Layout channel unavailable"),
+        }
 
         DocumentOrShadowRoot::add_stylesheet(
             owner,
@@ -3656,10 +3765,10 @@ impl Document {
     /// Remove a stylesheet owned by `owner` from the list of document sheets.
     #[allow(unrooted_must_root)] // Owner needs to be rooted already necessarily.
     pub fn remove_stylesheet(&self, owner: &Element, s: &Arc<Stylesheet>) {
-        self.window
-            .layout_chan()
-            .send(Msg::RemoveStylesheet(s.clone()))
-            .unwrap();
+        match self.window.layout_chan() {
+            Some(chan) => chan.send(Msg::RemoveStylesheet(s.clone())).unwrap(),
+            None => return warn!("Layout channel unavailable"),
+        }
 
         DocumentOrShadowRoot::remove_stylesheet(
             owner,
@@ -3793,6 +3902,10 @@ impl Document {
         self.animations
             .borrow()
             .do_post_reflow_update(&self.window, self.current_animation_timeline_value());
+    }
+
+    pub(crate) fn cancel_animations_for_node(&self, node: &Node) {
+        self.animations.borrow().cancel_animations_for_node(node);
     }
 }
 

@@ -37,8 +37,12 @@ pub enum Origin {
 #[derive(Clone, Debug, Deserialize, MallocSizeOf, PartialEq, Serialize)]
 pub enum Referrer {
     NoReferrer,
-    /// Default referrer if nothing is specified
-    Client,
+    /// Contains the url that "client" would be resolved to. See
+    /// [https://w3c.github.io/webappsec-referrer-policy/#determine-requests-referrer](https://w3c.github.io/webappsec-referrer-policy/#determine-requests-referrer)
+    ///
+    /// If you are unsure you should probably use
+    /// [`GlobalScope::get_referrer`](https://doc.servo.org/script/dom/globalscope/struct.GlobalScope.html#method.get_referrer)
+    Client(ServoUrl),
     ReferrerUrl(ServoUrl),
 }
 
@@ -117,23 +121,40 @@ pub enum ParserMetadata {
 }
 
 /// <https://fetch.spec.whatwg.org/#concept-body-source>
-#[derive(Clone, Debug, Deserialize, MallocSizeOf, Serialize)]
+#[derive(Clone, Debug, Deserialize, MallocSizeOf, PartialEq, Serialize)]
 pub enum BodySource {
     Null,
     Object,
 }
 
 /// Messages used to implement <https://fetch.spec.whatwg.org/#concept-request-transmit-body>
+/// which are sent from script to net.
+#[derive(Debug, Deserialize, Serialize)]
+pub enum BodyChunkResponse {
+    /// A chunk of bytes.
+    Chunk(Vec<u8>),
+    /// The body is done.
+    Done,
+    /// There was an error streaming the body,
+    /// terminate fetch.
+    Error,
+}
+
+/// Messages used to implement <https://fetch.spec.whatwg.org/#concept-request-transmit-body>
+/// which are sent from net to script
+/// (with the exception of Done, which is sent from script to script).
 #[derive(Debug, Deserialize, Serialize)]
 pub enum BodyChunkRequest {
     /// Connect a fetch in `net`, with a stream of bytes from `script`.
-    Connect(IpcSender<Vec<u8>>),
+    Connect(IpcSender<BodyChunkResponse>),
     /// Re-extract a new stream from the source, following a redirect.
     Extract(IpcReceiver<BodyChunkRequest>),
     /// Ask for another chunk.
     Chunk,
-    /// Signal the stream is done.
+    /// Signal the stream is done(sent from script to script).
     Done,
+    /// Signal the stream has errored(sent from script to script).
+    Error,
 }
 
 /// The net component's view into <https://fetch.spec.whatwg.org/#bodies>
@@ -142,8 +163,6 @@ pub struct RequestBody {
     /// Net's channel to communicate with script re this body.
     #[ignore_malloc_size_of = "Channels are hard"]
     chan: IpcSender<BodyChunkRequest>,
-    /// Has the stream been read from already?
-    read_from: bool,
     /// <https://fetch.spec.whatwg.org/#concept-body-source>
     source: BodySource,
     /// <https://fetch.spec.whatwg.org/#concept-body-total-bytes>
@@ -160,33 +179,27 @@ impl RequestBody {
             chan,
             source,
             total_bytes,
-            read_from: false,
         }
     }
 
-    pub fn take_stream(&mut self) -> IpcSender<BodyChunkRequest> {
-        if self.read_from {
-            match self.source {
-                BodySource::Null => panic!(
-                    "Null sources should never be read more than once(no re-direct allowed)."
-                ),
-                BodySource::Object => {
-                    let (chan, port) = ipc::channel().unwrap();
-                    let _ = self.chan.send(BodyChunkRequest::Extract(port));
-                    self.chan = chan.clone();
-                    return chan;
-                },
-            }
+    /// Step 12 of https://fetch.spec.whatwg.org/#concept-http-redirect-fetch
+    pub fn extract_source(&mut self) {
+        match self.source {
+            BodySource::Null => panic!("Null sources should never be re-directed."),
+            BodySource::Object => {
+                let (chan, port) = ipc::channel().unwrap();
+                let _ = self.chan.send(BodyChunkRequest::Extract(port));
+                self.chan = chan.clone();
+            },
         }
-        self.read_from = true;
+    }
+
+    pub fn take_stream(&self) -> IpcSender<BodyChunkRequest> {
         self.chan.clone()
     }
 
     pub fn source_is_null(&self) -> bool {
-        if let BodySource::Null = self.source {
-            return true;
-        }
-        false
+        self.source == BodySource::Null
     }
 
     pub fn len(&self) -> Option<usize> {
@@ -222,7 +235,7 @@ pub struct RequestBuilder {
     pub use_url_credentials: bool,
     pub origin: ImmutableOrigin,
     // XXXManishearth these should be part of the client object
-    pub referrer: Option<Referrer>,
+    pub referrer: Referrer,
     pub referrer_policy: Option<ReferrerPolicy>,
     pub pipeline_id: Option<PipelineId>,
     pub redirect_mode: RedirectMode,
@@ -240,7 +253,7 @@ pub struct RequestBuilder {
 }
 
 impl RequestBuilder {
-    pub fn new(url: ServoUrl) -> RequestBuilder {
+    pub fn new(url: ServoUrl, referrer: Referrer) -> RequestBuilder {
         RequestBuilder {
             method: Method::GET,
             url: url,
@@ -256,7 +269,7 @@ impl RequestBuilder {
             credentials_mode: CredentialsMode::Omit,
             use_url_credentials: false,
             origin: ImmutableOrigin::new_opaque(),
-            referrer: None,
+            referrer: referrer,
             referrer_policy: None,
             pipeline_id: None,
             redirect_mode: RedirectMode::Follow,
@@ -329,11 +342,6 @@ impl RequestBuilder {
         self
     }
 
-    pub fn referrer(mut self, referrer: Option<Referrer>) -> RequestBuilder {
-        self.referrer = referrer;
-        self
-    }
-
     pub fn referrer_policy(mut self, referrer_policy: Option<ReferrerPolicy>) -> RequestBuilder {
         self.referrer_policy = referrer_policy;
         self
@@ -368,6 +376,7 @@ impl RequestBuilder {
         let mut request = Request::new(
             self.url.clone(),
             Some(Origin::Origin(self.origin)),
+            self.referrer,
             self.pipeline_id,
             self.https_state,
         );
@@ -384,7 +393,6 @@ impl RequestBuilder {
         request.credentials_mode = self.credentials_mode;
         request.use_url_credentials = self.use_url_credentials;
         request.cache_mode = self.cache_mode;
-        request.referrer = self.referrer.unwrap_or(Referrer::Client);
         request.referrer_policy = self.referrer_policy;
         request.redirect_mode = self.redirect_mode;
         let mut url_list = self.url_list;
@@ -475,6 +483,7 @@ impl Request {
     pub fn new(
         url: ServoUrl,
         origin: Option<Origin>,
+        referrer: Referrer,
         pipeline_id: Option<PipelineId>,
         https_state: HttpsState,
     ) -> Request {
@@ -491,7 +500,7 @@ impl Request {
             initiator: Initiator::None,
             destination: Destination::None,
             origin: origin.unwrap_or(Origin::Client),
-            referrer: Referrer::Client,
+            referrer: referrer,
             referrer_policy: None,
             pipeline_id: pipeline_id,
             synchronous: false,
@@ -560,7 +569,8 @@ impl Request {
 impl Referrer {
     pub fn to_url(&self) -> Option<&ServoUrl> {
         match *self {
-            Referrer::NoReferrer | Referrer::Client => None,
+            Referrer::NoReferrer => None,
+            Referrer::Client(ref url) => Some(url),
             Referrer::ReferrerUrl(ref url) => Some(url),
         }
     }

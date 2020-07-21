@@ -4,6 +4,7 @@
 
 import multiprocessing
 import os
+from os import path
 import sys
 import mozlog
 import grouping_formatter
@@ -19,6 +20,7 @@ def wpt_path(*args):
 def servo_path(*args):
     return os.path.join(servo_root, *args)
 
+
 paths = {"include_manifest": wpt_path("include.ini"),
          "config": wpt_path("config.ini"),
          "ca-cert-path": wpt_path("web-platform-tests/tools/certs/cacert.pem"),
@@ -26,8 +28,8 @@ paths = {"include_manifest": wpt_path("include.ini"),
          "host-cert-path": wpt_path("web-platform-tests/tools/certs/web-platform.test.pem")}
 # Imports
 sys.path.append(wpt_path("web-platform-tests", "tools"))
-import localpaths  # noqa: flake8
-from wptrunner import wptrunner, wptcommandline
+import localpaths  # noqa: F401,E402
+from wptrunner import wptrunner, wptcommandline  # noqa: E402
 
 
 def run_tests(**kwargs):
@@ -71,7 +73,10 @@ def set_defaults(kwargs):
         bin_name = "servo"
         if sys.platform == "win32":
             bin_name += ".exe"
-        bin_path = servo_path("target", bin_dir, bin_name)
+        if "CARGO_TARGET_DIR" in os.environ:
+            bin_path = path.join(os.environ["CARGO_TARGET_DIR"], bin_dir, bin_name)
+        else:
+            bin_path = servo_path("target", bin_dir, bin_name)
 
         kwargs["binary"] = bin_path
         kwargs["webdriver_binary"] = bin_path
@@ -105,6 +110,7 @@ def main():
     parser = wptcommandline.create_parser()
     kwargs = vars(parser.parse_args())
     return run_tests(**kwargs)
+
 
 if __name__ == "__main__":
     sys.exit(0 if main() else 1)

@@ -45,6 +45,7 @@ TRAILING WHITESPACE, INDENT TABS, CR AT EOL: *.ico
 TRAILING WHITESPACE, INDENT TABS, CR AT EOL: *.wasm
 TRAILING WHITESPACE, INDENT TABS, CR AT EOL: *.bmp
 TRAILING WHITESPACE, INDENT TABS, CR AT EOL: *.sxg
+TRAILING WHITESPACE, INDENT TABS, CR AT EOL: *.wbn
 
 ## .gitignore
 W3C-TEST.ORG: .gitignore
@@ -172,11 +173,13 @@ SET TIMEOUT: IndexedDB/*
 SET TIMEOUT: infrastructure/*
 SET TIMEOUT: intersection-observer/resources/*
 SET TIMEOUT: intersection-observer/target-in-different-window.html
+SET TIMEOUT: measure-memory/*
 SET TIMEOUT: media-source/mediasource-util.js
 SET TIMEOUT: media-source/URL-createObjectURL-revoke.html
 SET TIMEOUT: mixed-content/generic/sanity-checker.js
 SET TIMEOUT: navigation-timing/*
 SET TIMEOUT: html/canvas/offscreen/the-offscreen-canvas/*
+SET TIMEOUT: html/canvas/offscreen/manual/the-offscreen-canvas/*
 SET TIMEOUT: old-tests/submission/Microsoft/history/history_000.htm
 SET TIMEOUT: paint-timing/resources/subframe-painting.html
 SET TIMEOUT: payment-request/allowpaymentrequest/setting-allowpaymentrequest-timing.https.sub.html
@@ -278,7 +281,7 @@ GENERATE_TESTS: html/webappapis/atob/base64.html
 GENERATE_TESTS: mediacapture-fromelement/capture.html
 GENERATE_TESTS: mediacapture-fromelement/creation.html
 GENERATE_TESTS: mediacapture-fromelement/ended.html
-GENERATE_TESTS: html/canvas/offscreen/filter/offscreencanvas.filter.html
+GENERATE_TESTS: html/canvas/offscreen/manual/filter/offscreencanvas.filter.html
 GENERATE_TESTS: pointerevents/pointerevent_constructor.html
 GENERATE_TESTS: pointerevents/extension/pointerevent_constructor.html
 GENERATE_TESTS: selection/collapse.js
@@ -313,6 +316,8 @@ SET TIMEOUT: resources/test/tests/functional/add_cleanup_async.html
 SET TIMEOUT: resources/test/tests/functional/add_cleanup_async_rejection.html
 SET TIMEOUT: resources/test/tests/functional/add_cleanup_async_rejection_after_load.html
 SET TIMEOUT: resources/test/tests/functional/api-tests-1.html
+SET TIMEOUT: resources/test/tests/functional/step_wait.html
+SET TIMEOUT: resources/test/tests/functional/step_wait_func.html
 SET TIMEOUT: resources/test/tests/functional/worker.js
 SET TIMEOUT: resources/test/tests/functional/worker-uncaught-allow.js
 SET TIMEOUT: resources/test/tests/unit/exceptional-cases.html
@@ -612,6 +617,8 @@ CSS-COLLIDING-SUPPORT-NAME: css/css-display/support/util.js
 CSS-COLLIDING-SUPPORT-NAME: css/CSS2/normal-flow/support/replaced-min-max-1.png
 CSS-COLLIDING-SUPPORT-NAME: css/vendor-imports/mozilla/mozilla-central-reftests/ui3/support/replaced-min-max-1.png
 
+CSS-COLLIDING-TEST-NAME: css/css-contain/inheritance.html
+CSS-COLLIDING-TEST-NAME: css/css-contain/content-visibility/inheritance.html
 CSS-COLLIDING-TEST-NAME: css/css-sizing/contain-intrinsic-size/parsing/contain-intrinsic-size-invalid.html
 CSS-COLLIDING-TEST-NAME: css/css-sizing/aspect-ratio/parsing/contain-intrinsic-size-invalid.html
 CSS-COLLIDING-TEST-NAME: css/css-sizing/contain-intrinsic-size/parsing/contain-intrinsic-size-computed.html
@@ -682,6 +689,7 @@ MISSING-LINK: css/filter-effects/*.any.js
 
 # Tests that use WebKit/Blink testing APIs
 LAYOUTTESTS APIS: import-maps/common/resources/common-test-helper.js
+LAYOUTTESTS APIS: resources/test-only-api.js
 LAYOUTTESTS APIS: resources/chromium/enable-hyperlink-auditing.js
 LAYOUTTESTS APIS: resources/chromium/generic_sensor_mocks.js
 LAYOUTTESTS APIS: resources/chromium/nfc-mock.js
@@ -699,10 +707,12 @@ WEB-PLATFORM.TEST:signed-exchange/resources/generate-test-sxgs.sh
 # Web Bundle files have hard-coded URLs
 WEB-PLATFORM.TEST:web-bundle/resources/generate-test-wbns.sh
 WEB-PLATFORM.TEST:web-bundle/resources/wbn/*.wbn
+WEB-PLATFORM.TEST:web-bundle/subresource-loading/subresource-loading-from-web-bundle.tentative.html
 
 # Tests that depend on resources in /gen/ in Chromium:
 # https://github.com/web-platform-tests/wpt/issues/16455
 # Please consult with ecosystem-infra@chromium.org before adding more.
+MISSING DEPENDENCY: resources/test-only-api.js
 MISSING DEPENDENCY: idle-detection/interceptor.https.html
 MISSING DEPENDENCY: credential-management/support/otpcredential-helper.js
 MISSING DEPENDENCY: web-nfc/resources/nfc-helpers.js
@@ -763,9 +773,6 @@ TESTHARNESS-IN-OTHER-TYPE: svg/extensibility/foreignObject/foreign-object-circul
 TESTHARNESS-IN-OTHER-TYPE: svg/extensibility/foreignObject/foreign-object-under-clip-path-crash.html
 TESTHARNESS-IN-OTHER-TYPE: svg/extensibility/foreignObject/foreign-object-under-defs-crash.html
 TESTHARNESS-IN-OTHER-TYPE: svg/svg-in-svg/svg-in-svg-circular-filter-reference-crash.html
-
-TESTHARNESS-PATH: referrer-policy/generic/iframe-upgrade-request.sub.html
-TESTHARNESSREPORT-PATH: referrer-policy/generic/iframe-upgrade-request.sub.html
 
 PRINT STATEMENT: webdriver/tests/print/printcmd.py
 PRINT STATEMENT: webdriver/tests/print/user_prompts.py

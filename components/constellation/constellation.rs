@@ -126,7 +126,9 @@ use keyboard_types::KeyboardEvent;
 use layout_traits::LayoutThreadFactory;
 use log::{Level, LevelFilter, Log, Metadata, Record};
 use media::{GLPlayerThreads, WindowGLContext};
-use msg::constellation_msg::{BackgroundHangMonitorRegister, HangMonitorAlert, SamplerControlMsg};
+use msg::constellation_msg::{
+    BackgroundHangMonitorControlMsg, BackgroundHangMonitorRegister, HangMonitorAlert,
+};
 use msg::constellation_msg::{
     BroadcastChannelRouterId, MessagePortId, MessagePortRouterId, PipelineNamespace,
     PipelineNamespaceId, PipelineNamespaceRequest, TraversalDirection,
@@ -136,7 +138,7 @@ use msg::constellation_msg::{
     TopLevelBrowsingContextId,
 };
 use net_traits::pub_domains::reg_host;
-use net_traits::request::RequestBuilder;
+use net_traits::request::{Referrer, RequestBuilder};
 use net_traits::storage_thread::{StorageThreadMsg, StorageType};
 use net_traits::{self, FetchResponseMsg, IpcSend, ResourceThreads};
 use profile_traits::mem;
@@ -172,11 +174,12 @@ use std::marker::PhantomData;
 use std::mem::replace;
 use std::process;
 use std::rc::{Rc, Weak};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use style_traits::viewport::ViewportConstraints;
 use style_traits::CSSPixel;
-use webgpu::{WebGPU, WebGPURequest};
+use webgpu::{self, WebGPU, WebGPURequest};
+use webrender_traits::WebrenderExternalImageRegistry;
 
 type PendingApprovalNavigations = HashMap<PipelineId, (LoadData, HistoryEntryReplacement)>;
 
@@ -214,6 +217,18 @@ struct MessagePortInfo {
 
     /// The id of the entangled port, if any.
     entangled_with: Option<MessagePortId>,
+}
+
+/// Webrender related objects required by WebGPU threads
+struct WebrenderWGPU {
+    /// Webrender API.
+    webrender_api: webrender_api::RenderApi,
+
+    /// List of Webrender external images
+    webrender_external_images: Arc<Mutex<WebrenderExternalImageRegistry>>,
+
+    /// WebGPU data that supplied to Webrender for rendering
+    wgpu_image_map: Arc<Mutex<HashMap<u64, webgpu::PresentationData>>>,
 }
 
 /// Servo supports tabs (referred to as browsers), so `Constellation` needs to
@@ -281,16 +296,18 @@ pub struct Constellation<Message, LTF, STF, SWF> {
     /// None when in multiprocess mode.
     background_monitor_register: Option<Box<dyn BackgroundHangMonitorRegister>>,
 
-    /// Channels to control all sampling profilers.
-    sampling_profiler_control: Vec<IpcSender<SamplerControlMsg>>,
+    /// Channels to control all background-hang monitors.
+    /// TODO: store them on the relevant BrowsingContextGroup,
+    /// so that they could be controlled on a "per-tab/event-loop" basis.
+    background_monitor_control_senders: Vec<IpcSender<BackgroundHangMonitorControlMsg>>,
 
     /// A channel for the background hang monitor to send messages
     /// to the constellation.
-    background_hang_monitor_sender: Option<IpcSender<HangMonitorAlert>>,
+    background_hang_monitor_sender: IpcSender<HangMonitorAlert>,
 
     /// A channel for the constellation to receiver messages
     /// from the background hang monitor.
-    background_hang_monitor_receiver: Option<Receiver<Result<HangMonitorAlert, IpcError>>>,
+    background_hang_monitor_receiver: Receiver<Result<HangMonitorAlert, IpcError>>,
 
     /// An IPC channel for layout threads to send messages to the constellation.
     /// This is the layout threads' view of `layout_receiver`.
@@ -383,6 +400,9 @@ pub struct Constellation<Message, LTF, STF, SWF> {
 
     /// A single WebRender document the constellation operates on.
     webrender_document: webrender_api::DocumentId,
+
+    /// Webrender related objects required by WebGPU threads
+    webrender_wgpu: WebrenderWGPU,
 
     /// A channel for content processes to send messages that will
     /// be relayed to the WebRender thread.
@@ -533,6 +553,12 @@ pub struct InitialConstellationState {
     /// Webrender document ID.
     pub webrender_document: webrender_api::DocumentId,
 
+    /// Webrender API.
+    pub webrender_api_sender: webrender_api::RenderApiSender,
+
+    /// Webrender external images
+    pub webrender_external_images: Arc<Mutex<WebrenderExternalImageRegistry>>,
+
     /// Entry point to create and get channels to a WebGLThread.
     pub webgl_threads: Option<WebGLThreads>,
 
@@ -549,6 +575,8 @@ pub struct InitialConstellationState {
 
     /// User agent string to report in network requests.
     pub user_agent: Cow<'static, str>,
+
+    pub wgpu_image_map: Arc<Mutex<HashMap<u64, webgpu::PresentationData>>>,
 }
 
 /// Data needed for webdriver
@@ -759,42 +787,28 @@ where
                     ipc_scheduler_receiver,
                 );
 
-                let (background_hang_monitor_sender, background_hang_monitor_receiver) =
-                    if opts::get().background_hang_monitor {
-                        let (bhm_sender, ipc_bhm_receiver) =
-                            ipc::channel().expect("ipc channel failure");
-                        (
-                            Some(bhm_sender),
-                            Some(route_ipc_receiver_to_new_mpsc_receiver_preserving_errors(
-                                ipc_bhm_receiver,
-                            )),
-                        )
-                    } else {
-                        (None, None)
-                    };
+                let (background_hang_monitor_sender, ipc_bhm_receiver) =
+                    ipc::channel().expect("ipc channel failure");
+                let background_hang_monitor_receiver =
+                    route_ipc_receiver_to_new_mpsc_receiver_preserving_errors(ipc_bhm_receiver);
 
                 // If we are in multiprocess mode,
                 // a dedicated per-process hang monitor will be initialized later inside the content process.
                 // See run_content_process in servo/lib.rs
-                let (background_monitor_register, sampler_chan) =
-                    if opts::multiprocess() || !opts::get().background_hang_monitor {
-                        (None, vec![])
-                    } else {
-                        let (sampling_profiler_control, sampling_profiler_port) =
-                            ipc::channel().expect("ipc channel failure");
-                        if let Some(bhm_sender) = background_hang_monitor_sender.clone() {
-                            (
-                                Some(HangMonitorRegister::init(
-                                    bhm_sender,
-                                    sampling_profiler_port,
-                                )),
-                                vec![sampling_profiler_control],
-                            )
-                        } else {
-                            warn!("No BHM sender found in BHM mode.");
-                            (None, vec![])
-                        }
-                    };
+                let (background_monitor_register, bhm_control_chans) = if opts::multiprocess() {
+                    (None, vec![])
+                } else {
+                    let (bhm_control_chan, bhm_control_port) =
+                        ipc::channel().expect("ipc channel failure");
+                    (
+                        Some(HangMonitorRegister::init(
+                            background_hang_monitor_sender.clone(),
+                            bhm_control_port,
+                            opts::get().background_hang_monitor,
+                        )),
+                        vec![bhm_control_chan],
+                    )
+                };
 
                 let (ipc_layout_sender, ipc_layout_receiver) =
                     ipc::channel().expect("ipc channel failure");
@@ -834,6 +848,12 @@ where
                     }),
                 );
 
+                let webrender_wgpu = WebrenderWGPU {
+                    webrender_api: state.webrender_api_sender.create_api(),
+                    webrender_external_images: state.webrender_external_images,
+                    wgpu_image_map: state.wgpu_image_map,
+                };
+
                 let mut constellation: Constellation<Message, LTF, STF, SWF> = Constellation {
                     namespace_receiver,
                     namespace_sender,
@@ -841,7 +861,7 @@ where
                     background_hang_monitor_sender,
                     background_hang_monitor_receiver,
                     background_monitor_register,
-                    sampling_profiler_control: sampler_chan,
+                    background_monitor_control_senders: bhm_control_chans,
                     layout_sender: ipc_layout_sender,
                     script_receiver: script_receiver,
                     compositor_receiver: compositor_receiver,
@@ -889,6 +909,7 @@ where
                     webrender_image_api_sender: net_traits::WebrenderIpcSender::new(
                         webrender_image_ipc_sender,
                     ),
+                    webrender_wgpu,
                     shutting_down: false,
                     handled_warnings: VecDeque::new(),
                     random_pipeline_closure: random_pipeline_closure_probability.map(|prob| {
@@ -1166,8 +1187,8 @@ where
             Err(e) => return self.handle_send_error(pipeline_id, e),
         };
 
-        if let Some(sampler_chan) = pipeline.sampler_control_chan {
-            self.sampling_profiler_control.push(sampler_chan);
+        if let Some(chan) = pipeline.bhm_control_chan {
+            self.background_monitor_control_senders.push(chan);
         }
 
         if let Some(host) = host {
@@ -1286,10 +1307,6 @@ where
                 "no replacement"
             },
         );
-        self.handle_load_start_msg(
-            change.top_level_browsing_context_id,
-            change.browsing_context_id,
-        );
         self.pending_changes.push(change);
     }
 
@@ -1332,7 +1349,7 @@ where
             recv(self.script_receiver) -> msg => {
                 msg.expect("Unexpected script channel panic in constellation").map(Request::Script)
             }
-            recv(self.background_hang_monitor_receiver.as_ref().unwrap_or(&never())) -> msg => {
+            recv(self.background_hang_monitor_receiver) -> msg => {
                 msg.expect("Unexpected BHM channel panic in constellation").map(Request::BackgroundHangMonitor)
             }
             recv(self.compositor_receiver) -> msg => {
@@ -1453,6 +1470,9 @@ where
             FromCompositorMsg::Keyboard(key_event) => {
                 self.handle_key_msg(key_event);
             },
+            FromCompositorMsg::IMEDismissed => {
+                self.handle_ime_dismissed();
+            },
             // Perform a navigation previously requested by script, if approved by the embedder.
             // If there is already a pending page (self.pending_changes), it will not be overridden;
             // However, if the id is not encompassed by another change, it will be.
@@ -1513,7 +1533,13 @@ where
             // If there is already a pending page (self.pending_changes), it will not be overridden;
             // However, if the id is not encompassed by another change, it will be.
             FromCompositorMsg::LoadUrl(top_level_browsing_context_id, url) => {
-                let load_data = LoadData::new(LoadOrigin::Constellation, url, None, None, None);
+                let load_data = LoadData::new(
+                    LoadOrigin::Constellation,
+                    url,
+                    None,
+                    Referrer::NoReferrer,
+                    None,
+                );
                 let ctx_id = BrowsingContextId::from(top_level_browsing_context_id);
                 let pipeline_id = match self.browsing_contexts.get(&ctx_id) {
                     Some(ctx) => ctx.pipeline_id,
@@ -1592,15 +1618,18 @@ where
             },
             FromCompositorMsg::SetCursor(cursor) => self.handle_set_cursor_msg(cursor),
             FromCompositorMsg::EnableProfiler(rate, max_duration) => {
-                for chan in &self.sampling_profiler_control {
-                    if let Err(e) = chan.send(SamplerControlMsg::Enable(rate, max_duration)) {
+                for chan in &self.background_monitor_control_senders {
+                    if let Err(e) = chan.send(BackgroundHangMonitorControlMsg::EnableSampler(
+                        rate,
+                        max_duration,
+                    )) {
                         warn!("error communicating with sampling profiler: {}", e);
                     }
                 }
             },
             FromCompositorMsg::DisableProfiler => {
-                for chan in &self.sampling_profiler_control {
-                    if let Err(e) = chan.send(SamplerControlMsg::Disable) {
+                for chan in &self.background_monitor_control_senders {
+                    if let Err(e) = chan.send(BackgroundHangMonitorControlMsg::DisableSampler) {
                         warn!("error communicating with sampling profiler: {}", e);
                     }
                 }
@@ -1899,12 +1928,16 @@ where
                     EmbedderMsg::MediaSessionEvent(event),
                 ));
             },
-            FromScriptMsg::RequestAdapter(sender, options, ids) => self
-                .handle_request_wgpu_adapter(
-                    source_pipeline_id,
-                    BrowsingContextId::from(source_top_ctx_id),
-                    FromScriptMsg::RequestAdapter(sender, options, ids),
-                ),
+            FromScriptMsg::RequestAdapter(sender, options, ids) => self.handle_wgpu_request(
+                source_pipeline_id,
+                BrowsingContextId::from(source_top_ctx_id),
+                FromScriptMsg::RequestAdapter(sender, options, ids),
+            ),
+            FromScriptMsg::GetWebGPUChan(sender) => self.handle_wgpu_request(
+                source_pipeline_id,
+                BrowsingContextId::from(source_top_ctx_id),
+                FromScriptMsg::GetWebGPUChan(sender),
+            ),
         }
     }
 
@@ -2072,7 +2105,7 @@ where
         }
     }
 
-    fn handle_request_wgpu_adapter(
+    fn handle_wgpu_request(
         &mut self,
         source_pipeline_id: PipelineId,
         browsing_context_id: BrowsingContextId,
@@ -2090,46 +2123,62 @@ where
             Some(host) => host,
             None => return warn!("Invalid host url"),
         };
-        match self
+        let browsing_context_group = if let Some(bcg) = self
             .browsing_context_group_set
             .get_mut(&browsing_context_group_id)
         {
-            Some(browsing_context_group) => {
-                let adapter_request =
-                    if let FromScriptMsg::RequestAdapter(sender, options, ids) = request {
-                        WebGPURequest::RequestAdapter {
-                            sender,
-                            options,
-                            ids,
-                        }
-                    } else {
-                        return warn!("Wrong message type in handle_request_wgpu_adapter");
-                    };
-                let send = match browsing_context_group.webgpus.entry(host) {
-                    Entry::Vacant(v) => v
-                        .insert(match WebGPU::new() {
-                            Some(webgpu) => {
-                                let msg = ConstellationControlMsg::SetWebGPUPort(webgpu.1);
-                                if let Err(e) = source_pipeline.event_loop.send(msg) {
-                                    warn!(
-                                        "Failed to send SetWebGPUPort to pipeline {} ({:?})",
-                                        source_pipeline_id, e
-                                    );
-                                }
-                                webgpu.0
-                            },
-                            None => return warn!("Failed to create new WebGPU thread"),
-                        })
-                        .0
-                        .send(adapter_request),
-                    Entry::Occupied(o) => o.get().0.send(adapter_request),
+            bcg
+        } else {
+            return warn!("Browsing context group not found");
+        };
+        let webgpu_chan = match browsing_context_group.webgpus.entry(host) {
+            Entry::Vacant(v) => v
+                .insert(
+                    match WebGPU::new(
+                        self.webrender_wgpu.webrender_api.create_sender(),
+                        self.webrender_document,
+                        self.webrender_wgpu.webrender_external_images.clone(),
+                        self.webrender_wgpu.wgpu_image_map.clone(),
+                    ) {
+                        Some(webgpu) => {
+                            let msg = ConstellationControlMsg::SetWebGPUPort(webgpu.1);
+                            if let Err(e) = source_pipeline.event_loop.send(msg) {
+                                warn!(
+                                    "Failed to send SetWebGPUPort to pipeline {} ({:?})",
+                                    source_pipeline_id, e
+                                );
+                            }
+                            webgpu.0
+                        },
+                        None => {
+                            return warn!("Failed to create new WebGPU thread");
+                        },
+                    },
+                )
+                .clone(),
+            Entry::Occupied(o) => o.get().clone(),
+        };
+        match request {
+            FromScriptMsg::RequestAdapter(sender, options, ids) => {
+                let adapter_request = WebGPURequest::RequestAdapter {
+                    sender,
+                    options,
+                    ids,
                 };
-                if send.is_err() {
+                if webgpu_chan.0.send(adapter_request).is_err() {
                     return warn!("Failed to send request adapter message on WebGPU channel");
                 }
             },
-            None => return warn!("Browsing context group not found"),
-        };
+            FromScriptMsg::GetWebGPUChan(sender) => {
+                if sender.send(webgpu_chan).is_err() {
+                    return warn!(
+                        "Failed to send WebGPU channel to Pipeline {:?}",
+                        source_pipeline_id
+                    );
+                }
+            },
+            _ => return warn!("Wrong message type in handle_wgpu_request"),
+        }
     }
 
     fn handle_request_from_layout(&mut self, message: FromLayoutMsg) {
@@ -2601,6 +2650,22 @@ where
 
         self.mem_profiler_chan.send(mem::ProfilerMsg::Exit);
 
+        // Tell all BHMs to exit,
+        // and to ensure their monitored components exit
+        // even when currently hanging(on JS or sync XHR).
+        // This must be done before starting the process of closing all pipelines.
+        for chan in &self.background_monitor_control_senders {
+            let (exit_sender, exit_receiver) =
+                ipc::channel().expect("Failed to create IPC channel!");
+            if let Err(e) = chan.send(BackgroundHangMonitorControlMsg::Exit(exit_sender)) {
+                warn!("error communicating with bhm: {}", e);
+                continue;
+            }
+            if exit_receiver.recv().is_err() {
+                warn!("Failed to receive exit confirmation from BHM.");
+            }
+        }
+
         // Close the top-level browsing contexts
         let browsing_context_ids: Vec<BrowsingContextId> = self
             .browsing_contexts
@@ -2707,13 +2772,6 @@ where
             warn!("Exit Canvas Paint thread failed ({})", e);
         }
 
-        if let Some(webgl_threads) = self.webgl_threads.as_ref() {
-            debug!("Exiting WebGL thread.");
-            if let Err(e) = webgl_threads.exit() {
-                warn!("Exit WebGL Thread failed ({})", e);
-            }
-        }
-
         debug!("Exiting WebGPU threads.");
         let receivers = self
             .browsing_context_group_set
@@ -2735,6 +2793,13 @@ where
         for receiver in receivers {
             if let Err(e) = receiver.recv() {
                 warn!("Failed to receive exit response from WebGPU ({:?})", e);
+            }
+        }
+
+        if let Some(webgl_threads) = self.webgl_threads.as_ref() {
+            debug!("Exiting WebGL thread.");
+            if let Err(e) = webgl_threads.exit() {
+                warn!("Exit WebGL Thread failed ({})", e);
             }
         }
 
@@ -2837,7 +2902,13 @@ where
         warn!("creating replacement pipeline for about:failure");
 
         let new_pipeline_id = PipelineId::new();
-        let load_data = LoadData::new(LoadOrigin::Constellation, failure_url, None, None, None);
+        let load_data = LoadData::new(
+            LoadOrigin::Constellation,
+            failure_url,
+            None,
+            Referrer::NoReferrer,
+            None,
+        );
         let sandbox = IFrameSandboxState::IFrameSandboxed;
         let is_private = false;
         self.new_pipeline(
@@ -2947,7 +3018,13 @@ where
         );
         self.embedder_proxy.send(msg);
         let browsing_context_id = BrowsingContextId::from(top_level_browsing_context_id);
-        let load_data = LoadData::new(LoadOrigin::Constellation, url, None, None, None);
+        let load_data = LoadData::new(
+            LoadOrigin::Constellation,
+            url,
+            None,
+            Referrer::NoReferrer,
+            None,
+        );
         let sandbox = IFrameSandboxState::IFrameUnsandboxed;
         let is_private = false;
         let is_visible = true;
@@ -3557,18 +3634,6 @@ where
         }
     }
 
-    fn handle_load_start_msg(
-        &mut self,
-        top_level_browsing_context_id: TopLevelBrowsingContextId,
-        browsing_context_id: BrowsingContextId,
-    ) {
-        if browsing_context_id == top_level_browsing_context_id {
-            // Notify embedder top level document started loading.
-            self.embedder_proxy
-                .send((Some(top_level_browsing_context_id), EmbedderMsg::LoadStart));
-        }
-    }
-
     fn handle_load_complete_msg(
         &mut self,
         top_level_browsing_context_id: TopLevelBrowsingContextId,
@@ -3611,10 +3676,6 @@ where
                 // Notify embedder and compositor top level document finished loading.
                 self.compositor_proxy
                     .send(ToCompositorMsg::LoadComplete(top_level_browsing_context_id));
-                self.embedder_proxy.send((
-                    Some(top_level_browsing_context_id),
-                    EmbedderMsg::LoadComplete,
-                ));
             }
         } else {
             self.handle_subframe_loaded(pipeline_id);
@@ -4014,6 +4075,39 @@ where
 
         let session_history = self.get_joint_session_history(top_level_browsing_context_id);
         session_history.replace_history_state(pipeline_id, history_state_id, url);
+    }
+
+    fn handle_ime_dismissed(&mut self) {
+        // Send to the focused browsing contexts' current pipeline.
+        let focused_browsing_context_id = self
+            .active_browser_id
+            .and_then(|browser_id| self.browsers.get(&browser_id))
+            .map(|browser| browser.focused_browsing_context_id);
+        if let Some(browsing_context_id) = focused_browsing_context_id {
+            let pipeline_id = match self.browsing_contexts.get(&browsing_context_id) {
+                Some(ctx) => ctx.pipeline_id,
+                None => {
+                    return warn!(
+                        "Got IME dismissed event for nonexistent browsing context {}.",
+                        browsing_context_id,
+                    );
+                },
+            };
+            let msg =
+                ConstellationControlMsg::SendEvent(pipeline_id, CompositorEvent::IMEDismissedEvent);
+            let result = match self.pipelines.get(&pipeline_id) {
+                Some(pipeline) => pipeline.event_loop.send(msg),
+                None => {
+                    return debug!(
+                        "Pipeline {:?} got IME dismissed event after closure.",
+                        pipeline_id
+                    );
+                },
+            };
+            if let Err(e) = result {
+                self.handle_send_error(pipeline_id, e);
+            }
+        }
     }
 
     fn handle_key_msg(&mut self, event: KeyboardEvent) {

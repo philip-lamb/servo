@@ -9,8 +9,6 @@
     xmlns:muxc="using:Microsoft.UI.Xaml.Controls"
     mc:Ignorable="d">
 
-
-
     <Page.Resources>
         <Style x:Key="NavigationBarButton" TargetType="Button">
             <Setter Property="Background" Value="Transparent"/>
@@ -98,42 +96,43 @@
                 <ColumnDefinition Width="auto"/>
             </Grid.ColumnDefinitions>
             <StackPanel Orientation="Horizontal" Grid.Column="0">
-                <Button Style="{StaticResource NavigationBarButton}" x:Name="backButton" IsTabStop="true" IsEnabled="false" Click="OnBackButtonClicked" AutomationProperties.Name="Back" ToolTipService.ToolTip="Back">
-                    <Image Source="Assets/UI/back.png" Height="18"></Image>
+                <Button Style="{StaticResource NavigationBarButton}" x:Uid="backButton" x:Name="backButton" IsTabStop="true" IsEnabled="false" Click="OnBackButtonClicked">
+                    <SymbolIcon Symbol="Back"/>
                     <Button.KeyboardAccelerators>
                         <KeyboardAccelerator Key="Left" Modifiers="Menu" />
                     </Button.KeyboardAccelerators>
                 </Button>
-                <Button Style="{StaticResource NavigationBarButton}" x:Name="forwardButton" IsTabStop="true" IsEnabled="false" Click="OnForwardButtonClicked" AutomationProperties.Name="Forward" ToolTipService.ToolTip="Forward">
-                    <Image Source="Assets/UI/forward.png" Height="18"></Image>
+                <Button Style="{StaticResource NavigationBarButton}" x:Uid="forwardButton" x:Name="forwardButton" IsTabStop="true" IsEnabled="false" Click="OnForwardButtonClicked">
+                    <SymbolIcon Symbol="Forward"/>
                     <Button.KeyboardAccelerators>
                         <KeyboardAccelerator Key="Right" Modifiers="Menu" />
                     </Button.KeyboardAccelerators>
                 </Button>
-                <Button Style="{StaticResource NavigationBarButton}" x:Name="reloadButton" IsTabStop="true" IsEnabled="false" Visibility="Visible" Click="OnReloadButtonClicked" AutomationProperties.Name="Reload" ToolTipService.ToolTip="Reload">
-                    <Image Source="Assets/UI/reload.png" Height="18"></Image>
+                <Button Style="{StaticResource NavigationBarButton}" x:Name="reloadButton" x:Uid="reloadButton" IsTabStop="true" IsEnabled="false" Visibility="Visible" Click="OnReloadButtonClicked">
+                    <SymbolIcon Symbol="Refresh"/>
                     <Button.KeyboardAccelerators>
                         <KeyboardAccelerator Key="R" Modifiers="Control" />
                     </Button.KeyboardAccelerators>
                 </Button>
-                <Button Style="{StaticResource NavigationBarButton}" x:Name="stopButton" IsTabStop="true" IsEnabled="false" Visibility="Collapsed" Click="OnStopButtonClicked" AutomationProperties.Name="Stop" ToolTipService.ToolTip="Stop">
-                    <Image Source="Assets/UI/cross.png" Height="18"></Image>
+                <Button Style="{StaticResource NavigationBarButton}" x:Name="stopButton" x:Uid="stopButton" IsTabStop="true" IsEnabled="false" Visibility="Collapsed" Click="OnStopButtonClicked">
+                    <SymbolIcon Symbol="Cancel"/>
                     <Button.KeyboardAccelerators>
                         <KeyboardAccelerator Key="Escape" Modifiers="None" />
                     </Button.KeyboardAccelerators>
                 </Button>
-                <Button Style="{StaticResource NavigationBarButton}" x:Name="homeButton" IsTabStop="true" Click="OnHomeButtonClicked" AutomationProperties.Name="Home" ToolTipService.ToolTip="Home">
-                    <Image Source="Assets/UI/home.png" Height="18"></Image>
+                <Button Style="{StaticResource NavigationBarButton}" x:Name="homeButton" x:Uid="homeButton" IsTabStop="true" Click="OnHomeButtonClicked">
+                    <SymbolIcon Symbol="Home"/>
                 </Button>
             </StackPanel>
-            <TextBox Text="" IsTabStop="true" InputScope="Url" PlaceholderText="Type a URL" x:Name="urlTextbox" VerticalAlignment="Center" Grid.Column="1" KeyUp="OnURLEdited" IsSpellCheckEnabled="False" Margin="3,0" KeyboardAcceleratorPlacementMode="Hidden">
+            <TextBox x:Uid="urlTextbox" Text="" IsTabStop="true" InputScope="Url" x:Name="urlTextbox" VerticalAlignment="Center" Grid.Column="1" KeyUp="OnURLEdited" IsSpellCheckEnabled="False" Margin="3,0" KeyboardAcceleratorPlacementMode="Hidden">
                 <TextBox.KeyboardAccelerators>
                     <KeyboardAccelerator Key="L" Modifiers="Control" Invoked="OnURLKeyboardAccelerator"/>
                 </TextBox.KeyboardAccelerators>
             </TextBox>
             <StackPanel Orientation="Horizontal" Grid.Column="2">
-                <Button Style="{StaticResource NavigationBarButton}" x:Name="devtoolsButton" IsTabStop="true" Click="OnDevtoolsButtonClicked" AutomationProperties.Name="Devtools" ToolTipService.ToolTip="Devtools">
-                    <Image Source="Assets/UI/devtools.png" Height="18"></Image>
+                <Button Style="{StaticResource NavigationBarButton}" x:Name="devtoolsButton" IsEnabled="false" x:Uid="devtoolsButton" IsTabStop="true" Click="OnDevtoolsButtonClicked">
+                    <!-- EC7A is the "DeveloperTools" symbol, not exported in the symbol list for some reason -->
+                    <FontIcon FontFamily="{StaticResource SymbolThemeFontFamily}" Glyph="&#xEC7A;"/>
                 </Button>
                 <ProgressRing x:Name="urlbarLoadingIndicator" Margin="10,0"/>
             </StackPanel>
@@ -147,32 +146,54 @@
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
                     <Button Grid.Column="1" Style="{StaticResource NavigationBarButton}" x:Name="toolboxCloseButton" IsTabStop="true" Click="OnDevtoolsButtonClicked">
-                        <Image Source="Assets/UI/cross.png" Height="18"></Image>
+                        <SymbolIcon Symbol="Cancel"/>
                     </Button>
                 </Grid>
             </muxc:TabView.TabStripFooter>
-            <muxc:TabViewItem Header="Devtools Server" IsClosable="False">
-                <StackPanel>
-                    <TextBlock x:Name="DevtoolsStatusOK" Visibility="Collapsed" Margin="10">
-                        <Run>Devtools server is listening on port </Run>
-                        <Run FontWeight="Bold" x:Name="DevtoolsPort"></Run>
-                        <Run>.</Run>
-                    </TextBlock>
-                    <TextBlock x:Name="DevtoolsStatusKO" Visibility="Collapsed">
-                        <Run>Devtools server failed to start.</Run>
-                    </TextBlock>
-                    <TextBlock x:Name="DevtoolsStatusWIP" Visibility="Collapsed">
-                        <Run>Devtools server is starting..</Run>
-                    </TextBlock>
-                </StackPanel>
+            <muxc:TabViewItem x:Uid="devtoolsTabConsole" IsClosable="False">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <ListView ItemsSource="{x:Bind ConsoleLogs}">
+                        <ListView.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <ItemsStackPanel Orientation="Vertical" ItemsUpdatingScrollMode="KeepLastItemInView"/>
+                            </ItemsPanelTemplate>
+                        </ListView.ItemsPanel>
+                        <ListView.ItemTemplate>
+                            <DataTemplate x:DataType="local:ConsoleLog">
+                                <Grid Padding="2">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <FontIcon FontSize="12" FontFamily="{StaticResource SymbolThemeFontFamily}" Glyph="{x:Bind Glyph}" Foreground="{x:Bind GlyphColor}" Grid.Column="0" MinWidth="22"/>
+                                    <TextBlock FontFamily="Consolas" FontSize="12" Text="{x:Bind Body}" Grid.Column="1"/>
+                                    <TextBlock FontFamily="Consolas" FontSize="12" Text="{x:Bind Source}" Grid.Column="2" Margin="10,0"  Style="{ThemeResource BodyTextBlockStyle}" Foreground="{ThemeResource SystemBaseMediumColor}"/>
+                                </Grid>
+                            </DataTemplate>
+                        </ListView.ItemTemplate>
+                        <ListView.ItemContainerStyle>
+                            <Style TargetType="ListViewItem">
+                                <Setter Property="Padding" Value="0"/>
+                                <Setter Property="MinHeight" Value="0"/>
+                                <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                            </Style>
+                        </ListView.ItemContainerStyle>
+                    </ListView>
+                    <TextBox MinHeight="12" FontFamily="Consolas" FontSize="12" Grid.Row="1" IsTabStop="true" x:Name="JSInput" VerticalAlignment="Center" KeyUp="OnJSInputEdited" IsSpellCheckEnabled="False"/>
+                </Grid>
             </muxc:TabViewItem>
-            <muxc:TabViewItem Header="Preferences" IsClosable="False">
+            <muxc:TabViewItem x:Uid="devtoolsTabPrefs" IsClosable="False">
                 <Grid VerticalAlignment="Stretch">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="auto"/>
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
-                    <TextBox Grid.Row="0" Text="" IsTabStop="true" PlaceholderText="Search preferences" x:Name="preferenceSearchbox" VerticalAlignment="Center" KeyUp="OnPrefererenceSearchboxEdited" IsSpellCheckEnabled="False" Margin="3"/>
+                    <TextBox Grid.Row="0" IsTabStop="true" x:Uid="preferenceSearchbox" x:Name="preferenceSearchbox" VerticalAlignment="Center" KeyUp="OnPrefererenceSearchboxEdited" IsSpellCheckEnabled="False" Margin="3"/>
                     <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
                         <StackPanel x:Name="prefList"/>
                     </ScrollViewer>
@@ -181,8 +202,8 @@
         </muxc:TabView>
         <ProgressBar x:Name="transientLoadingIndicator" Visibility="Collapsed" Grid.Row="3"/>
         <CommandBar Grid.Row="4" x:Name="mediaControls" Visibility="Collapsed">
-            <AppBarButton Icon="Play" Label="Play" x:Name="playButton" Visibility="Collapsed" Click="OnMediaControlsPlayClicked"/>
-            <AppBarButton Icon="Pause" Label="Pause" x:Name="pauseButton" Click="OnMediaControlsPauseClicked"/>
+            <AppBarButton Icon="Play" x:Uid="playButton" x:Name="playButton" Visibility="Collapsed" Click="OnMediaControlsPlayClicked"/>
+            <AppBarButton Icon="Pause" x:Uid="pauseButton" x:Name="pauseButton" Click="OnMediaControlsPauseClicked"/>
         </CommandBar>
     </Grid>
 

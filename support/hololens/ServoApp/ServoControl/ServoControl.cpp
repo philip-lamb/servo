@@ -1,14 +1,18 @@
 #include "pch.h"
+#include "strutils.h"
 #include "ServoControl.h"
 #include "ServoControl.g.cpp"
 #include "Pref.g.cpp"
 #include <stdlib.h>
+#include "Keys.h"
 
 using namespace std::placeholders;
+using namespace winrt::Windows::ApplicationModel::Resources;
 using namespace winrt::Windows::Graphics::Display;
 using namespace winrt::Windows::UI::Xaml;
 using namespace winrt::Windows::UI::Popups;
 using namespace winrt::Windows::UI::Core;
+using namespace winrt::Windows::UI::Text::Core;
 using namespace winrt::Windows::Foundation;
 using namespace winrt::Windows::System;
 using namespace winrt::Windows::Devices::Input;
@@ -21,6 +25,16 @@ ServoControl::ServoControl() {
   mDPI = (float)DisplayInformation::GetForCurrentView().ResolutionScale() / 100;
   DefaultStyleKey(winrt::box_value(L"ServoApp.ServoControl"));
   Loaded(std::bind(&ServoControl::OnLoaded, this, _1, _2));
+
+  auto r = ResourceLoader::GetForCurrentView();
+  L10NStrings l10NStrings = {r.GetString(L"ContextMenu/title"),
+                             r.GetString(L"JavascriptPrompt/title"),
+                             r.GetString(L"JavascriptPrompt/ok"),
+                             r.GetString(L"JavascriptPrompt/cancel"),
+                             r.GetString(L"JavascriptPrompt/yes"),
+                             r.GetString(L"JavascriptPrompt/no"),
+                             r.GetString(L"URINotValid/Alert")};
+  mL10NStrings = std::make_unique<L10NStrings>(l10NStrings);
 }
 
 void ServoControl::Shutdown() {
@@ -54,21 +68,19 @@ void ServoControl::OnLoaded(IInspectable const &, RoutedEventArgs const &) {
       std::bind(&ServoControl::OnSurfacePointerMoved, this, _1, _2));
   panel.PointerWheelChanged(
       std::bind(&ServoControl::OnSurfaceWheelChanged, this, _1, _2));
-  panel.ManipulationStarted(
-      [=](IInspectable const &,
-          Input::ManipulationStartedRoutedEventArgs const &e) {
-        mOnCaptureGesturesStartedEvent();
-        e.Handled(true);
-      });
-  panel.ManipulationCompleted(
-      [=](IInspectable const &,
-          Input::ManipulationCompletedRoutedEventArgs const &e) {
-        mOnCaptureGesturesEndedEvent();
-        e.Handled(true);
-      });
+  panel.ManipulationStarted([=](const auto &, const auto &e) {
+    mOnCaptureGesturesStartedEvent();
+    e.Handled(true);
+  });
+  panel.ManipulationCompleted([=](const auto &, const auto &e) {
+    mOnCaptureGesturesEndedEvent();
+    e.Handled(true);
+  });
   panel.ManipulationDelta(
       std::bind(&ServoControl::OnSurfaceManipulationDelta, this, _1, _2));
-  Panel().SizeChanged(std::bind(&ServoControl::OnSurfaceResized, this, _1, _2));
+  panel.SizeChanged(std::bind(&ServoControl::OnSurfaceResized, this, _1, _2));
+
+  InitializeTextController();
   InitializeConditionVariable(&mGLCondVar);
   InitializeCriticalSection(&mGLLock);
   InitializeConditionVariable(&mDialogCondVar);
@@ -77,13 +89,79 @@ void ServoControl::OnLoaded(IInspectable const &, RoutedEventArgs const &) {
   StartRenderLoop();
 }
 
+void ServoControl::InitializeTextController() {
+  mInputPane = Windows::UI::ViewManagement::InputPane::GetForCurrentView();
+  mInputPane->Hiding([=](const auto &, const auto &) {
+    if (mLooping) {
+      RunOnGLThread([=] { mServo->IMEDismissed(); });
+    }
+  });
+
+  auto manager = CoreTextServicesManager::GetForCurrentView();
+  mEditContext = manager.CreateEditContext();
+  mEditContext->InputPaneDisplayPolicy(CoreTextInputPaneDisplayPolicy::Manual);
+
+  mEditContext->TextRequested([=](const auto &, const auto &e) {
+    e.Request().Text(*mFocusedInputText);
+  });
+
+  mEditContext->SelectionRequested([=](const auto &, const auto &) {});
+
+  mEditContext->LayoutRequested([=](const auto &, const auto &e) {
+    // Necessary to show the preview
+    e.Request().LayoutBounds().TextBounds(*mFocusedInputRect);
+    e.Request().LayoutBounds().ControlBounds(*mFocusedInputRect);
+  });
+
+  mEditContext->TextUpdating([=](const auto &, const auto &e) {
+    RunOnGLThread([=] {
+      auto text = *hstring2char(e.Text());
+      size_t size = strlen(text);
+      for (int i = 0; i < size; i++) {
+        char letter[2];
+        memcpy(letter, &text[i], 1);
+        letter[1] = '\0';
+        mServo->KeyDown(letter);
+        mServo->KeyUp(letter);
+      }
+    });
+    e.Result(CoreTextTextUpdatingResult::Succeeded);
+  });
+
+  GotFocus(
+      [=](const auto &, const auto &) { mEditContext->NotifyFocusEnter(); });
+
+  LostFocus(
+      [=](const auto &, const auto &) { mEditContext->NotifyFocusLeave(); });
+
+  PreviewKeyDown([=](const auto &, const auto &e) {
+    auto keystr = KeyToString(e.Key());
+    if (keystr.has_value()) {
+      RunOnGLThread([=] {
+        auto keyname = *keystr;
+        mServo->KeyDown(keyname);
+      });
+    }
+  });
+
+  PreviewKeyUp([=](const auto &, const auto &e) {
+    auto keystr = KeyToString(e.Key());
+    if (keystr.has_value()) {
+      RunOnGLThread([=] {
+        auto keyname = *keystr;
+        mServo->KeyUp(keyname);
+      });
+    }
+  });
+}
+
 Controls::SwapChainPanel ServoControl::Panel() {
   return GetTemplateChild(L"swapChainPanel").as<Controls::SwapChainPanel>();
 }
 
 void ServoControl::CreateNativeWindow() {
-  mPanelWidth = Panel().ActualWidth() * mDPI;
-  mPanelHeight = Panel().ActualHeight() * mDPI;
+  mPanelWidth = (int)(Panel().ActualWidth() * mDPI);
+  mPanelHeight = (int)(Panel().ActualHeight() * mDPI);
   mNativeWindowProperties.Insert(EGLNativeWindowTypeProperty, Panel());
   // How to set size and or scale:
   // Insert(EGLRenderSurfaceSizeProperty),
@@ -116,6 +194,7 @@ void ServoControl::OnSurfaceManipulationDelta(
 
 void ServoControl::OnSurfaceTapped(IInspectable const &,
                                    Input::TappedRoutedEventArgs const &e) {
+  Focus(FocusState::Programmatic);
   if (e.PointerDeviceType() == PointerDeviceType::Mouse) {
     auto coords = e.GetPosition(Panel());
     auto x = coords.X * mDPI;
@@ -258,6 +337,9 @@ void ServoControl::ChangeVisibility(bool visible) {
 void ServoControl::Stop() {
   RunOnGLThread([=] { mServo->Stop(); });
 }
+void ServoControl::GoHome() {
+  RunOnGLThread([=] { mServo->GoHome(); });
+}
 hstring ServoControl::LoadURIOrSearch(hstring input) {
   // Initial input is valid
   if (mServo->IsUriValid(input)) {
@@ -280,13 +362,8 @@ hstring ServoControl::LoadURIOrSearch(hstring input) {
   std::wstring searchUri =
       unbox_value<hstring>(std::get<1>(Servo::GetPref(L"shell.searchpage")))
           .c_str();
-  std::wstring keyword = L"%s";
-  size_t start_pos = searchUri.find(keyword);
-  if (start_pos == std::string::npos)
-    searchUri = searchUri + escapedInput;
-  else
-    searchUri.replace(start_pos, keyword.length(), escapedInput);
-  hstring finalUri{searchUri};
+  std::wstring formatted = format(searchUri, escapedInput.c_str());
+  hstring finalUri{formatted};
   TryLoadUri(finalUri);
   return finalUri;
 }
@@ -299,17 +376,17 @@ void ServoControl::SendMediaSessionAction(int32_t action) {
 }
 
 void ServoControl::TryLoadUri(hstring input) {
-  if (!mLooping) {
-    mInitialURL = input;
-  } else {
+  if (mLooping) {
     RunOnGLThread([=] {
       if (!mServo->LoadUri(input)) {
         RunOnUIThread([=] {
-          MessageDialog msg{L"URI not valid"};
+          MessageDialog msg{mL10NStrings->URINotValid};
           msg.ShowAsync();
         });
       }
     });
+  } else {
+    mInitUrl = input;
   }
 }
 
@@ -323,14 +400,14 @@ void ServoControl::RunOnGLThread(std::function<void()> task) {
 /**** GL THREAD LOOP ****/
 
 void ServoControl::Loop() {
-  log("BrowserPage::Loop(). GL thread: %i", GetCurrentThreadId());
+  log(L"BrowserPage::Loop(). GL thread: %i", GetCurrentThreadId());
 
   if (mServo == nullptr) {
-    log("Entering loop");
+    log(L"Entering loop");
     ServoDelegate *sd = static_cast<ServoDelegate *>(this);
     EGLNativeWindowType win = GetNativeWindow();
-    mServo = std::make_unique<Servo>(mInitialURL, mArgs, mPanelWidth,
-                                     mPanelHeight, win, mDPI, *sd);
+    mServo = std::make_unique<Servo>(mInitUrl, mArgs, mPanelWidth, mPanelHeight,
+                                     win, mDPI, *sd);
   } else {
     // FIXME: this will fail since create_task didn't pick the thread
     // where Servo was running initially.
@@ -367,7 +444,7 @@ void ServoControl::StartRenderLoop() {
 #endif
   }
   mLooping = true;
-  log("BrowserPage::StartRenderLoop(). UI thread: %i", GetCurrentThreadId());
+  log(L"BrowserPage::StartRenderLoop(). UI thread: %i", GetCurrentThreadId());
   auto task = Concurrency::create_task([=] { Loop(); });
   mLoopTask = std::make_unique<Concurrency::task<void>>(task);
 }
@@ -432,9 +509,25 @@ void ServoControl::OnServoAnimatingChanged(bool animating) {
   WakeConditionVariable(&mGLCondVar);
 }
 
-void ServoControl::OnServoIMEStateChanged(bool) {
-  // FIXME:
-  // https://docs.microsoft.com/en-us/windows/win32/winauto/uiauto-implementingtextandtextrange
+void ServoControl::OnServoIMEHide() {
+  RunOnUIThread([=] { mInputPane->TryHide(); });
+}
+
+void ServoControl::OnServoIMEShow(hstring text, int32_t x, int32_t y,
+                                  int32_t width, int32_t height) {
+  RunOnUIThread([=] {
+    mEditContext->NotifyFocusEnter();
+    // FIXME: The simpleservo on_ime_show callback comes with a input method
+    // type parameter that could be used to set the input scope here.
+    mEditContext->InputScope(CoreTextInputScope::Text);
+    // offset of the Servo SwapChainPanel.
+    auto transform = Panel().TransformToVisual(Window::Current().Content());
+    auto offset = transform.TransformPoint(Point(0, 0));
+    mFocusedInputRect =
+        Rect(x + offset.X, y + offset.Y, (float)width, (float)height);
+    mFocusedInputText = text;
+    mInputPane->TryShow();
+  });
 }
 
 void ServoControl::OnServoMediaSessionMetadata(hstring title, hstring artist,
@@ -515,56 +608,68 @@ ServoControl::PromptSync(hstring title, hstring message, hstring primaryButton,
 }
 
 void ServoControl::OnServoPromptAlert(winrt::hstring message, bool trusted) {
-  auto title = trusted ? L"" : mCurrentUrl + L" says:";
-  PromptSync(title, message, L"OK", {}, {});
+  auto titlefmt =
+      format(mL10NStrings->PromptTitle.c_str(), mCurrentUrl.c_str());
+  hstring title{trusted ? L"" : titlefmt};
+  PromptSync(title, message, mL10NStrings->PromptOk, {}, {});
 }
 
-servo::Servo::PromptResult
-ServoControl::OnServoPromptOkCancel(winrt::hstring message, bool trusted) {
-  auto title = trusted ? L"" : mCurrentUrl + L" says:";
-  auto [button, string] = PromptSync(title, message, L"OK", L"Cancel", {});
+Servo::PromptResult ServoControl::OnServoPromptOkCancel(winrt::hstring message,
+                                                        bool trusted) {
+  auto titlefmt =
+      format(mL10NStrings->PromptTitle.c_str(), mCurrentUrl.c_str());
+  hstring title{trusted ? L"" : titlefmt};
+  auto [button, string] = PromptSync(title, message, mL10NStrings->PromptOk,
+                                     mL10NStrings->PromptCancel, {});
   if (button == Controls::ContentDialogResult::Primary) {
-    return servo::Servo::PromptResult::Primary;
+    return Servo::PromptResult::Primary;
   } else if (button == Controls::ContentDialogResult::Secondary) {
-    return servo::Servo::PromptResult::Secondary;
+    return Servo::PromptResult::Secondary;
   } else {
-    return servo::Servo::PromptResult::Dismissed;
+    return Servo::PromptResult::Dismissed;
   }
 }
 
-servo::Servo::PromptResult
-ServoControl::OnServoPromptYesNo(winrt::hstring message, bool trusted) {
-  auto title = trusted ? L"" : mCurrentUrl + L" says:";
-  auto [button, string] = PromptSync(title, message, L"Yes", L"No", {});
+Servo::PromptResult ServoControl::OnServoPromptYesNo(winrt::hstring message,
+                                                     bool trusted) {
+  auto titlefmt =
+      format(mL10NStrings->PromptTitle.c_str(), mCurrentUrl.c_str());
+  hstring title{trusted ? L"" : titlefmt};
+  auto [button, string] = PromptSync(title, message, mL10NStrings->PromptYes,
+                                     mL10NStrings->PromptNo, {});
   if (button == Controls::ContentDialogResult::Primary) {
-    return servo::Servo::PromptResult::Primary;
+    return Servo::PromptResult::Primary;
   } else if (button == Controls::ContentDialogResult::Secondary) {
-    return servo::Servo::PromptResult::Secondary;
+    return Servo::PromptResult::Secondary;
   } else {
-    return servo::Servo::PromptResult::Dismissed;
+    return Servo::PromptResult::Dismissed;
   }
 }
 
 std::optional<hstring> ServoControl::OnServoPromptInput(winrt::hstring message,
                                                         winrt::hstring default,
                                                         bool trusted) {
-  auto title = trusted ? L"" : mCurrentUrl + L" says:";
-  auto [button, string] = PromptSync(title, message, L"Ok", L"Cancel", default);
+  auto titlefmt =
+      format(mL10NStrings->PromptTitle.c_str(), mCurrentUrl.c_str());
+  hstring title{trusted ? L"" : titlefmt};
+  auto [button, string] = PromptSync(title, message, mL10NStrings->PromptOk,
+                                     mL10NStrings->PromptCancel, default);
   return string;
 }
 
-void ServoControl::OnServoDevtoolsStarted(bool success,
-                                          const unsigned int port) {
+void ServoControl::OnServoDevtoolsStarted(bool success, const unsigned int port,
+                                          hstring token) {
   RunOnUIThread([=] {
     auto status = success ? DevtoolsStatus::Running : DevtoolsStatus::Failed;
-    mOnDevtoolsStatusChangedEvent(status, port);
+    mOnDevtoolsStatusChangedEvent(status, port, token);
   });
 }
 
 void ServoControl::OnServoShowContextMenu(std::optional<hstring> title,
                                           std::vector<winrt::hstring> items) {
   RunOnUIThread([=] {
-    MessageDialog msg{title.value_or(L"Menu")};
+    auto titlestr = mL10NStrings->ContextMenuTitle;
+    MessageDialog msg{title.value_or(titlestr)};
     for (auto i = 0; i < items.size(); i++) {
       UICommand cmd{items[i], [=](auto) {
                       RunOnGLThread([=] {
@@ -574,7 +679,7 @@ void ServoControl::OnServoShowContextMenu(std::optional<hstring> title,
                     }};
       msg.Commands().Append(cmd);
     }
-    UICommand cancel{L"Cancel", [=](auto) {
+    UICommand cancel{mL10NStrings->PromptCancel, [=](auto) {
                        RunOnGLThread([=] {
                          mServo->ContextMenuClosed(
                              Servo::ContextMenuResult::Dismissed_, 0);

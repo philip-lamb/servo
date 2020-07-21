@@ -16,13 +16,15 @@ use crate::dom::bindings::codegen::Bindings::HTMLInputElementBinding::HTMLInputE
 use crate::dom::bindings::codegen::Bindings::HTMLTextAreaElementBinding::HTMLTextAreaElementMethods;
 use crate::dom::bindings::codegen::Bindings::NodeListBinding::NodeListMethods;
 use crate::dom::bindings::codegen::Bindings::WindowBinding::WindowBinding::WindowMethods;
+use crate::dom::bindings::error::{Error, Fallible};
 use crate::dom::bindings::inheritance::{Castable, ElementTypeId, HTMLElementTypeId, NodeTypeId};
 use crate::dom::bindings::refcounted::Trusted;
 use crate::dom::bindings::reflector::DomObject;
-use crate::dom::bindings::root::{Dom, DomOnceCell, DomRoot};
+use crate::dom::bindings::root::{Dom, DomOnceCell, DomRoot, MutNullableDom};
 use crate::dom::bindings::str::DOMString;
 use crate::dom::blob::Blob;
 use crate::dom::document::Document;
+use crate::dom::domtokenlist::DOMTokenList;
 use crate::dom::element::{AttributeMutation, Element};
 use crate::dom::event::{Event, EventBubbles, EventCancelable};
 use crate::dom::eventtarget::EventTarget;
@@ -67,6 +69,7 @@ use servo_atoms::Atom;
 use servo_rand::random;
 use std::borrow::ToOwned;
 use std::cell::Cell;
+use style::attr::AttrValue;
 use style::str::split_html_space_chars;
 
 use crate::dom::bindings::codegen::UnionTypes::RadioNodeListOrElement;
@@ -88,6 +91,8 @@ pub struct HTMLFormElement {
     generation_id: Cell<GenerationId>,
     controls: DomRefCell<Vec<Dom<Element>>>,
     past_names_map: DomRefCell<HashMap<Atom, (Dom<Element>, Tm)>>,
+    firing_submission_events: Cell<bool>,
+    rel_list: MutNullableDom<DOMTokenList>,
 }
 
 impl HTMLFormElement {
@@ -104,6 +109,8 @@ impl HTMLFormElement {
             generation_id: Cell::new(GenerationId(0)),
             controls: DomRefCell::new(Vec::new()),
             past_names_map: DomRefCell::new(HashMap::new()),
+            firing_submission_events: Cell::new(false),
+            rel_list: Default::default(),
         }
     }
 
@@ -238,9 +245,73 @@ impl HTMLFormElementMethods for HTMLFormElement {
     // https://html.spec.whatwg.org/multipage/#dom-fs-target
     make_setter!(SetTarget, "target");
 
+    // https://html.spec.whatwg.org/multipage/#dom-a-rel
+    make_getter!(Rel, "rel");
+
     // https://html.spec.whatwg.org/multipage/#the-form-element:concept-form-submit
     fn Submit(&self) {
         self.submit(SubmittedFrom::FromForm, FormSubmitter::FormElement(self));
+    }
+
+    // https://html.spec.whatwg.org/multipage/#dom-form-requestsubmit
+    fn RequestSubmit(&self, submitter: Option<&HTMLElement>) -> Fallible<()> {
+        let submitter: FormSubmitter = match submitter {
+            Some(submitter_element) => {
+                // Step 1.1
+                let error_not_a_submit_button =
+                    Err(Error::Type("submitter must be a submit button".to_string()));
+
+                let element = match submitter_element.upcast::<Node>().type_id() {
+                    NodeTypeId::Element(ElementTypeId::HTMLElement(element)) => element,
+                    _ => {
+                        return error_not_a_submit_button;
+                    },
+                };
+
+                let submit_button = match element {
+                    HTMLElementTypeId::HTMLInputElement => FormSubmitter::InputElement(
+                        &submitter_element
+                            .downcast::<HTMLInputElement>()
+                            .expect("Failed to downcast submitter elem to HTMLInputElement."),
+                    ),
+                    HTMLElementTypeId::HTMLButtonElement => FormSubmitter::ButtonElement(
+                        &submitter_element
+                            .downcast::<HTMLButtonElement>()
+                            .expect("Failed to downcast submitter elem to HTMLButtonElement."),
+                    ),
+                    _ => {
+                        return error_not_a_submit_button;
+                    },
+                };
+
+                if !submit_button.is_submit_button() {
+                    return error_not_a_submit_button;
+                }
+
+                let submitters_owner = submit_button.form_owner();
+
+                // Step 1.2
+                let owner = match submitters_owner {
+                    Some(owner) => owner,
+                    None => {
+                        return Err(Error::NotFound);
+                    },
+                };
+
+                if *owner != *self {
+                    return Err(Error::NotFound);
+                }
+
+                submit_button
+            },
+            None => {
+                // Step 2
+                FormSubmitter::FormElement(&self)
+            },
+        };
+        // Step 3
+        self.submit(SubmittedFrom::NotFromForm, submitter);
+        Ok(())
     }
 
     // https://html.spec.whatwg.org/multipage/#dom-form-reset
@@ -368,6 +439,18 @@ impl HTMLFormElementMethods for HTMLFormElement {
         return Some(RadioNodeListOrElement::Element(DomRoot::from_ref(
             &*element_node.downcast::<Element>().unwrap(),
         )));
+    }
+
+    // https://html.spec.whatwg.org/multipage/#dom-a-rel
+    fn SetRel(&self, rel: DOMString) {
+        self.upcast::<Element>()
+            .set_tokenlist_attribute(&local_name!("rel"), rel);
+    }
+
+    // https://html.spec.whatwg.org/multipage/#dom-a-rellist
+    fn RelList(&self) -> DomRoot<DOMTokenList> {
+        self.rel_list
+            .or_init(|| DOMTokenList::new(self.upcast(), &local_name!("rel")))
     }
 
     // https://html.spec.whatwg.org/multipage/#the-form-element:supported-property-names
@@ -599,28 +682,36 @@ impl HTMLFormElement {
         let base = doc.base_url();
         // TODO: Handle browsing contexts (Step 4, 5)
         // Step 6
-        if submit_method_flag == SubmittedFrom::NotFromForm && !submitter.no_validate(self) {
-            if self.interactive_validation().is_err() {
-                // TODO: Implement event handlers on all form control elements
-                self.upcast::<EventTarget>().fire_event(atom!("invalid"));
+        if submit_method_flag == SubmittedFrom::NotFromForm {
+            // Step 6.1
+            if self.firing_submission_events.get() {
                 return;
             }
-        }
-        // Step 7
-        // spec calls this "submitterButton" but it doesn't have to be a button,
-        // just not be the form itself
-        let submitter_button = match submitter {
-            FormSubmitter::FormElement(f) => {
-                if f == self {
-                    None
-                } else {
-                    Some(f.upcast::<HTMLElement>())
+            // Step 6.2
+            self.firing_submission_events.set(true);
+            // Step 6.3
+            if !submitter.no_validate(self) {
+                if self.interactive_validation().is_err() {
+                    self.firing_submission_events.set(false);
+                    return;
                 }
-            },
-            FormSubmitter::InputElement(i) => Some(i.upcast::<HTMLElement>()),
-            FormSubmitter::ButtonElement(b) => Some(b.upcast::<HTMLElement>()),
-        };
-        if submit_method_flag == SubmittedFrom::NotFromForm {
+            }
+            // Step 6.4
+            // spec calls this "submitterButton" but it doesn't have to be a button,
+            // just not be the form itself
+            let submitter_button = match submitter {
+                FormSubmitter::FormElement(f) => {
+                    if f == self {
+                        None
+                    } else {
+                        Some(f.upcast::<HTMLElement>())
+                    }
+                },
+                FormSubmitter::InputElement(i) => Some(i.upcast::<HTMLElement>()),
+                FormSubmitter::ButtonElement(b) => Some(b.upcast::<HTMLElement>()),
+            };
+
+            // Step 6.5
             let event = SubmitEvent::new(
                 &self.global(),
                 atom!("submit"),
@@ -630,48 +721,51 @@ impl HTMLFormElement {
             );
             let event = event.upcast::<Event>();
             event.fire(self.upcast::<EventTarget>());
+
+            // Step 6.6
+            self.firing_submission_events.set(false);
+            // Step 6.7
             if event.DefaultPrevented() {
                 return;
             }
-
-            // Step 7-3
+            // Step 6.8
             if self.upcast::<Element>().cannot_navigate() {
                 return;
             }
         }
 
-        // Step 8
+        // Step 7
         let encoding = self.pick_encoding();
 
-        // Step 9
+        // Step 8
         let mut form_data = match self.get_form_dataset(Some(submitter), Some(encoding)) {
             Some(form_data) => form_data,
             None => return,
         };
 
-        // Step 10
+        // Step 9
         if self.upcast::<Element>().cannot_navigate() {
             return;
         }
 
-        // Step 11
+        // Step 10
         let mut action = submitter.action();
 
-        // Step 12
+        // Step 11
         if action.is_empty() {
             action = DOMString::from(base.as_str());
         }
-        // Step 13-14
+        // Step 12-13
         let action_components = match base.join(&action) {
             Ok(url) => url,
             Err(_) => return,
         };
-        // Step 15-17
+        // Step 14-16
         let scheme = action_components.scheme().to_owned();
         let enctype = submitter.enctype();
         let method = submitter.method();
 
-        // Step 18-21
+        // Step 17-21
         let target_attribute_value = submitter.target();
         let source = doc.browsing_context().unwrap();
         let (maybe_chosen, _new) = source.choose_browsing_context(target_attribute_value, false);
@@ -688,7 +782,7 @@ impl HTMLFormElement {
             LoadOrigin::Script(doc.origin().immutable().clone()),
             action_components,
             None,
-            Some(Referrer::ReferrerUrl(target_document.url())),
+            target_window.upcast::<GlobalScope>().get_referrer(),
             target_document.get_referrer_policy(),
         );
 
@@ -840,13 +934,13 @@ impl HTMLFormElement {
             Some(ref link_types) if link_types.Value().contains("noreferrer") => {
                 Referrer::NoReferrer
             },
-            _ => Referrer::Client,
+            _ => target.upcast::<GlobalScope>().get_referrer(),
         };
 
         let referrer_policy = target.Document().get_referrer_policy();
         let pipeline_id = target.upcast::<GlobalScope>().pipeline_id();
         load_data.creator_pipeline_id = Some(pipeline_id);
-        load_data.referrer = Some(referrer);
+        load_data.referrer = referrer;
         load_data.referrer_policy = referrer_policy;
 
         // Step 4.
@@ -1232,11 +1326,14 @@ pub enum FormMethod {
     FormDialog,
 }
 
+/// <https://html.spec.whatwg.org/multipage/#form-associated-element>
 #[derive(Clone, Copy, MallocSizeOf)]
 pub enum FormSubmitter<'a> {
     FormElement(&'a HTMLFormElement),
     InputElement(&'a HTMLInputElement),
-    ButtonElement(&'a HTMLButtonElement), // TODO: image submit, etc etc
+    ButtonElement(&'a HTMLButtonElement),
+    // TODO: implement other types of form associated elements
+    // (including custom elements) that can be passed as submitter.
 }
 
 impl<'a> FormSubmitter<'a> {
@@ -1330,6 +1427,27 @@ impl<'a> FormSubmitter<'a> {
                     |i| i.FormNoValidate(),
                     |f| f.NoValidate(),
                 ),
+        }
+    }
+
+    // https://html.spec.whatwg.org/multipage/#concept-submit-button
+    fn is_submit_button(&self) -> bool {
+        match *self {
+            // https://html.spec.whatwg.org/multipage/#image-button-state-(type=image)
+            // https://html.spec.whatwg.org/multipage/#submit-button-state-(type=submit)
+            FormSubmitter::InputElement(input_element) => input_element.is_submit_button(),
+            // https://html.spec.whatwg.org/multipage/#attr-button-type-submit-state
+            FormSubmitter::ButtonElement(button_element) => button_element.is_submit_button(),
+            _ => false,
+        }
+    }
+
+    // https://html.spec.whatwg.org/multipage/#form-owner
+    fn form_owner(&self) -> Option<DomRoot<HTMLFormElement>> {
+        match *self {
+            FormSubmitter::ButtonElement(button_el) => button_el.form_owner(),
+            FormSubmitter::InputElement(input_el) => input_el.form_owner(),
+            _ => None,
         }
     }
 }
@@ -1535,6 +1653,16 @@ impl VirtualMethods for HTMLFormElement {
                 .as_maybe_form_control()
                 .expect("Element must be a form control")
                 .reset_form_owner();
+        }
+    }
+
+    fn parse_plain_attribute(&self, name: &LocalName, value: DOMString) -> AttrValue {
+        match name {
+            &local_name!("rel") => AttrValue::from_serialized_tokenlist(value.into()),
+            _ => self
+                .super_type()
+                .unwrap()
+                .parse_plain_attribute(name, value),
         }
     }
 }

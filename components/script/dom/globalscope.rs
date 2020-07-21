@@ -2,9 +2,10 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-use crate::dom::bindings::cell::DomRefCell;
+use crate::dom::bindings::cell::{DomRefCell, RefMut};
 use crate::dom::bindings::codegen::Bindings::BroadcastChannelBinding::BroadcastChannelMethods;
 use crate::dom::bindings::codegen::Bindings::EventSourceBinding::EventSourceBinding::EventSourceMethods;
+use crate::dom::bindings::codegen::Bindings::GPUValidationErrorBinding::GPUError;
 use crate::dom::bindings::codegen::Bindings::ImageBitmapBinding::{
     ImageBitmapOptions, ImageBitmapSource,
 };
@@ -34,6 +35,9 @@ use crate::dom::event::{Event, EventBubbles, EventCancelable, EventStatus};
 use crate::dom::eventsource::EventSource;
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::file::File;
+use crate::dom::gpudevice::GPUDevice;
+use crate::dom::gpuoutofmemoryerror::GPUOutOfMemoryError;
+use crate::dom::gpuvalidationerror::GPUValidationError;
 use crate::dom::htmlscriptelement::ScriptId;
 use crate::dom::identityhub::Identities;
 use crate::dom::imagebitmap::ImageBitmap;
@@ -51,8 +55,11 @@ use crate::dom::workerglobalscope::WorkerGlobalScope;
 use crate::dom::workletglobalscope::WorkletGlobalScope;
 use crate::microtask::{Microtask, MicrotaskQueue, UserMicrotask};
 use crate::realms::{enter_realm, AlreadyInRealm, InRealm};
-use crate::script_module::ModuleTree;
-use crate::script_runtime::{CommonScriptMsg, JSContext as SafeJSContext, ScriptChan, ScriptPort};
+use crate::script_module::{DynamicModuleList, ModuleTree};
+use crate::script_module::{ModuleScript, ScriptFetchOptions};
+use crate::script_runtime::{
+    CommonScriptMsg, ContextForRequestInterrupt, JSContext as SafeJSContext, ScriptChan, ScriptPort,
+};
 use crate::script_thread::{MainThreadScriptChan, ScriptThread};
 use crate::task::TaskCanceller;
 use crate::task_source::dom_manipulation::DOMManipulationTaskSource;
@@ -75,13 +82,16 @@ use embedder_traits::EmbedderMsg;
 use ipc_channel::ipc::{self, IpcSender};
 use ipc_channel::router::ROUTER;
 use js::glue::{IsWrapper, UnwrapObjectDynamic};
+use js::jsapi::Compile1;
+use js::jsapi::SetScriptPrivate;
 use js::jsapi::{CurrentGlobalOrNull, GetNonCCWObjectGlobal};
 use js::jsapi::{HandleObject, Heap};
 use js::jsapi::{JSContext, JSObject};
+use js::jsval::PrivateValue;
 use js::jsval::{JSVal, UndefinedValue};
 use js::panic::maybe_resume_unwind;
 use js::rust::transform_str_to_source_text;
-use js::rust::wrappers::Evaluate2;
+use js::rust::wrappers::{JS_ExecuteScript, JS_GetScriptPrivate};
 use js::rust::{get_object_class, CompileOptionsWrapper, ParentRuntime, Runtime};
 use js::rust::{HandleValue, MutableHandleValue};
 use js::{JSCLASS_IS_DOMJSCLASS, JSCLASS_IS_GLOBAL};
@@ -94,6 +104,7 @@ use net_traits::filemanager_thread::{
     FileManagerResult, FileManagerThreadMsg, ReadFileProgress, RelativePos,
 };
 use net_traits::image_cache::ImageCache;
+use net_traits::request::Referrer;
 use net_traits::response::HttpsState;
 use net_traits::{CoreResourceMsg, CoreResourceThread, IpcSend, ResourceThreads};
 use parking_lot::Mutex;
@@ -105,7 +116,7 @@ use script_traits::{
     ScriptToConstellationChan, TimerEvent,
 };
 use script_traits::{TimerEventId, TimerSchedulerMsg, TimerSource};
-use servo_url::{MutableOrigin, ServoUrl};
+use servo_url::{ImmutableOrigin, MutableOrigin, ServoUrl};
 use std::borrow::Cow;
 use std::cell::Cell;
 use std::collections::hash_map::Entry;
@@ -119,6 +130,7 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use time::{get_time, Timespec};
 use uuid::Uuid;
+use webgpu::{identity::WebGPUOpResult, WebGPUDevice};
 
 #[derive(JSTraceable)]
 pub struct AutoCloseWorker {
@@ -129,6 +141,8 @@ pub struct AutoCloseWorker {
     /// A sender of control messages,
     /// currently only used to signal shutdown.
     control_sender: Sender<DedicatedWorkerControlMsg>,
+    /// The context to request an interrupt on the worker thread.
+    context: ContextForRequestInterrupt,
 }
 
 impl Drop for AutoCloseWorker {
@@ -144,6 +158,8 @@ impl Drop for AutoCloseWorker {
         {
             warn!("Couldn't send an exit message to a dedicated worker.");
         }
+
+        self.context.request_interrupt();
 
         // TODO: step 2 and 3.
         // Step 4 is unnecessary since we don't use actual ports for dedicated workers.
@@ -278,8 +294,12 @@ pub struct GlobalScope {
     /// An optional string allowing the user agent to be set for testing.
     user_agent: Cow<'static, str>,
 
+    /// Identity Manager for WebGPU resources
     #[ignore_malloc_size_of = "defined in wgpu"]
     gpu_id_hub: Arc<Mutex<Identities>>,
+
+    /// WebGPU devices
+    gpu_devices: DomRefCell<HashMap<WebGPUDevice, Dom<GPUDevice>>>,
 
     // https://w3c.github.io/performance-timeline/#supportedentrytypes-attribute
     #[ignore_malloc_size_of = "mozjs"]
@@ -287,6 +307,12 @@ pub struct GlobalScope {
 
     /// currect https state (from previous request)
     https_state: Cell<HttpsState>,
+
+    /// The stack of active group labels for the Console APIs.
+    console_group_stack: DomRefCell<Vec<DOMString>>,
+
+    /// List of ongoing dynamic module imports.
+    dynamic_modules: DomRefCell<DynamicModuleList>,
 }
 
 /// A wrapper for glue-code between the ipc router and the event-loop.
@@ -734,8 +760,11 @@ impl GlobalScope {
             is_headless,
             user_agent,
             gpu_id_hub,
+            gpu_devices: DomRefCell::new(HashMap::new()),
             frozen_supported_performance_entry_types: DomRefCell::new(Default::default()),
             https_state: Cell::new(HttpsState::None),
+            console_group_stack: DomRefCell::new(Vec::new()),
+            dynamic_modules: DomRefCell::new(DynamicModuleList::new()),
         }
     }
 
@@ -2047,6 +2076,7 @@ impl GlobalScope {
         closing: Arc<AtomicBool>,
         join_handle: JoinHandle<()>,
         control_sender: Sender<DedicatedWorkerControlMsg>,
+        context: ContextForRequestInterrupt,
     ) {
         self.list_auto_close_worker
             .borrow_mut()
@@ -2054,6 +2084,7 @@ impl GlobalScope {
                 closing,
                 join_handle: Some(join_handle),
                 control_sender: control_sender,
+                context,
             });
     }
 
@@ -2330,6 +2361,43 @@ impl GlobalScope {
         unreachable!();
     }
 
+    /// Determine the Referrer for a request whose Referrer is "client"
+    pub fn get_referrer(&self) -> Referrer {
+        // Step 3 of https://w3c.github.io/webappsec-referrer-policy/#determine-requests-referrer
+        if let Some(window) = self.downcast::<Window>() {
+            // Substep 3.1
+
+            // Substep 3.1.1
+            let mut document = window.Document();
+
+            // Substep 3.1.2
+            if let ImmutableOrigin::Opaque(_) = document.origin().immutable() {
+                return Referrer::NoReferrer;
+            }
+
+            let mut url = document.url();
+
+            // Substep 3.1.3
+            while url.as_str() == "about:srcdoc" {
+                document = document
+                    .browsing_context()
+                    .expect("iframe should have browsing context")
+                    .parent()
+                    .expect("iframes browsing_context should have parent")
+                    .document()
+                    .expect("iframes parent should have document");
+
+                url = document.url();
+            }
+
+            // Substep 3.1.4
+            Referrer::Client(url)
+        } else {
+            // Substep 3.2
+            Referrer::Client(self.get_url())
+        }
+    }
+
     /// Extract a `Window`, panic if the global object is not a `Window`.
     pub fn as_window(&self) -> &Window {
         self.downcast::<Window>().expect("expected a Window scope")
@@ -2477,8 +2545,21 @@ impl GlobalScope {
     }
 
     /// Evaluate JS code on this global scope.
-    pub fn evaluate_js_on_global_with_result(&self, code: &str, rval: MutableHandleValue) -> bool {
-        self.evaluate_script_on_global_with_result(code, "", rval, 1)
+    pub fn evaluate_js_on_global_with_result(
+        &self,
+        code: &str,
+        rval: MutableHandleValue,
+        fetch_options: ScriptFetchOptions,
+        script_base_url: ServoUrl,
+    ) -> bool {
+        self.evaluate_script_on_global_with_result(
+            code,
+            "",
+            rval,
+            1,
+            fetch_options,
+            script_base_url,
+        )
     }
 
     /// Evaluate a JS script on this global scope.
@@ -2489,6 +2570,8 @@ impl GlobalScope {
         filename: &str,
         rval: MutableHandleValue,
         line_number: u32,
+        fetch_options: ScriptFetchOptions,
+        script_base_url: ServoUrl,
     ) -> bool {
         let metadata = profile_time::TimerMetadata {
             url: if filename.is_empty() {
@@ -2510,26 +2593,59 @@ impl GlobalScope {
                 let ar = enter_realm(&*self);
 
                 let _aes = AutoEntryScript::new(self);
-                let options =
-                    unsafe { CompileOptionsWrapper::new(*cx, filename.as_ptr(), line_number) };
 
-                debug!("evaluating Dom string");
-                let result = unsafe {
-                    Evaluate2(
-                        *cx,
-                        options.ptr,
-                        &mut transform_str_to_source_text(code),
-                        rval,
-                    )
-                };
+                unsafe {
+                    let options = CompileOptionsWrapper::new(*cx, filename.as_ptr(), line_number);
 
-                if !result {
-                    debug!("error evaluating Dom string");
-                    unsafe { report_pending_exception(*cx, true, InRealm::Entered(&ar)) };
+                    debug!("compiling Dom string");
+                    rooted!(in(*cx) let compiled_script =
+                        Compile1(
+                            *cx,
+                            options.ptr,
+                            &mut transform_str_to_source_text(code),
+                        )
+                    );
+
+                    if compiled_script.is_null() {
+                        debug!("error compiling Dom string");
+                        report_pending_exception(*cx, true, InRealm::Entered(&ar));
+                        return false;
+                    }
+
+                    rooted!(in(*cx) let mut script_private = UndefinedValue());
+                    JS_GetScriptPrivate(*compiled_script, script_private.handle_mut());
+
+                    // When `ScriptPrivate` for the compiled script is undefined,
+                    // we need to set it so that it can be used in dynamic import context.
+                    if script_private.is_undefined() {
+                        debug!("Set script private for {}", script_base_url);
+
+                        let module_script_data = Rc::new(ModuleScript::new(
+                            script_base_url,
+                            fetch_options,
+                            // We can't initialize an module owner here because
+                            // the executing context of script might be different
+                            // from the dynamic import script's executing context.
+                            None,
+                        ));
+
+                        SetScriptPrivate(
+                            *compiled_script,
+                            &PrivateValue(Rc::into_raw(module_script_data) as *const _),
+                        );
+                    }
+
+                    debug!("evaluating Dom string");
+                    let result = JS_ExecuteScript(*cx, compiled_script.handle(), rval);
+
+                    if !result {
+                        debug!("error evaluating Dom string");
+                        report_pending_exception(*cx, true, InRealm::Entered(&ar));
+                    }
+
+                    maybe_resume_unwind();
+                    result
                 }
-
-                maybe_resume_unwind();
-                result
             },
         )
     }
@@ -2674,6 +2790,20 @@ impl GlobalScope {
         unreachable!();
     }
 
+    /// Returns a boolean indicating whether the event-loop
+    /// where this global is running on can continue running JS.
+    pub fn can_continue_running(&self) -> bool {
+        if self.downcast::<Window>().is_some() {
+            return ScriptThread::can_continue_running();
+        }
+        if let Some(worker) = self.downcast::<WorkerGlobalScope>() {
+            return !worker.is_closing();
+        }
+
+        // TODO: plug worklets into this.
+        true
+    }
+
     /// Returns the task canceller of this global to ensure that everything is
     /// properly cancelled when the global scope is destroyed.
     pub fn task_canceller(&self, name: TaskSourceName) -> TaskCanceller {
@@ -2691,11 +2821,14 @@ impl GlobalScope {
 
     /// Perform a microtask checkpoint.
     pub fn perform_a_microtask_checkpoint(&self) {
-        self.microtask_queue.checkpoint(
-            self.get_cx(),
-            |_| Some(DomRoot::from_ref(self)),
-            vec![DomRoot::from_ref(self)],
-        );
+        // Only perform the checkpoint if we're not shutting down.
+        if self.can_continue_running() {
+            self.microtask_queue.checkpoint(
+                self.get_cx(),
+                |_| Some(DomRoot::from_ref(self)),
+                vec![DomRoot::from_ref(self)],
+            );
+        }
     }
 
     /// Enqueue a microtask for subsequent execution.
@@ -2722,8 +2855,9 @@ impl GlobalScope {
     }
 
     /// Process a single event as if it were the next event
-    /// in the thread queue for this global scope.
-    pub fn process_event(&self, msg: CommonScriptMsg) {
+    /// in the queue for the event-loop where this global scope is running on.
+    /// Returns a boolean indicating whether further events should be processed.
+    pub fn process_event(&self, msg: CommonScriptMsg) -> bool {
         if self.is::<Window>() {
             return ScriptThread::process_event(msg);
         }
@@ -2868,6 +3002,54 @@ impl GlobalScope {
 
     pub fn wgpu_id_hub(&self) -> Arc<Mutex<Identities>> {
         self.gpu_id_hub.clone()
+    }
+
+    pub fn add_gpu_device(&self, device: &GPUDevice) {
+        self.gpu_devices
+            .borrow_mut()
+            .insert(device.id(), Dom::from_ref(device));
+    }
+
+    pub fn remove_gpu_device(&self, device: WebGPUDevice) {
+        let _ = self.gpu_devices.borrow_mut().remove(&device);
+    }
+
+    pub fn handle_wgpu_msg(&self, device: WebGPUDevice, scope: u64, result: WebGPUOpResult) {
+        let result = match result {
+            WebGPUOpResult::Success => Ok(()),
+            WebGPUOpResult::ValidationError(m) => {
+                let val_err = GPUValidationError::new(&self, DOMString::from_string(m));
+                Err(GPUError::GPUValidationError(val_err))
+            },
+            WebGPUOpResult::OutOfMemoryError => {
+                let oom_err = GPUOutOfMemoryError::new(&self);
+                Err(GPUError::GPUOutOfMemoryError(oom_err))
+            },
+        };
+        self.gpu_devices
+            .borrow()
+            .get(&device)
+            .expect("GPUDevice not found")
+            .handle_server_msg(scope, result);
+    }
+
+    pub(crate) fn current_group_label(&self) -> Option<DOMString> {
+        self.console_group_stack
+            .borrow()
+            .last()
+            .map(|label| DOMString::from(format!("[{}]", label)))
+    }
+
+    pub(crate) fn push_console_group(&self, group: DOMString) {
+        self.console_group_stack.borrow_mut().push(group);
+    }
+
+    pub(crate) fn pop_console_group(&self) {
+        let _ = self.console_group_stack.borrow_mut().pop();
+    }
+
+    pub(crate) fn dynamic_module_list(&self) -> RefMut<DynamicModuleList> {
+        self.dynamic_modules.borrow_mut()
     }
 }
 

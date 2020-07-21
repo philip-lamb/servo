@@ -15,7 +15,7 @@ use crate::data::ElementData;
 use crate::element_state::ElementState;
 use crate::font_metrics::FontMetricsProvider;
 use crate::media_queries::Device;
-use crate::properties::{AnimationRules, ComputedValues, PropertyDeclarationBlock};
+use crate::properties::{AnimationDeclarations, ComputedValues, PropertyDeclarationBlock};
 use crate::selector_parser::{AttrValue, Lang, PseudoElement, SelectorImpl};
 use crate::shared_lock::{Locked, SharedRwLock};
 use crate::stylist::CascadeData;
@@ -479,12 +479,15 @@ pub trait TElement:
     /// Get the combined animation and transition rules.
     ///
     /// FIXME(emilio): Is this really useful?
-    fn animation_rules(&self, context: &SharedStyleContext) -> AnimationRules {
+    fn animation_declarations(&self, context: &SharedStyleContext) -> AnimationDeclarations {
         if !self.may_have_animations() {
-            return AnimationRules(None, None);
+            return Default::default();
         }
 
-        AnimationRules(self.animation_rule(context), self.transition_rule(context))
+        AnimationDeclarations {
+            animations: self.animation_rule(context),
+            transitions: self.transition_rule(context),
+        }
     }
 
     /// Get this element's animation rule.
@@ -750,12 +753,23 @@ pub trait TElement:
     /// or are scheduled to do so in the future.
     fn has_animations(&self, context: &SharedStyleContext) -> bool;
 
-    /// Returns true if the element has a CSS animation.
-    fn has_css_animations(&self, context: &SharedStyleContext) -> bool;
+    /// Returns true if the element has a CSS animation. The `context` and `pseudo_element`
+    /// arguments are only used by Servo, since it stores animations globally and pseudo-elements
+    /// are not in the DOM.
+    fn has_css_animations(
+        &self,
+        context: &SharedStyleContext,
+        pseudo_element: Option<PseudoElement>,
+    ) -> bool;
 
     /// Returns true if the element has a CSS transition (including running transitions and
-    /// completed transitions).
-    fn has_css_transitions(&self, context: &SharedStyleContext) -> bool;
+    /// completed transitions). The `context` and `pseudo_element` arguments are only used
+    /// by Servo, since it stores animations globally and pseudo-elements are not in the DOM.
+    fn has_css_transitions(
+        &self,
+        context: &SharedStyleContext,
+        pseudo_element: Option<PseudoElement>,
+    ) -> bool;
 
     /// Returns true if the element has animation restyle hints.
     fn has_animation_restyle_hints(&self) -> bool {
@@ -802,7 +816,7 @@ pub trait TElement:
         Self: 'a,
         F: FnMut(&'a CascadeData, Self),
     {
-        use rule_collector::containing_shadow_ignoring_svg_use;
+        use crate::rule_collector::containing_shadow_ignoring_svg_use;
 
         let target = self.rule_hash_target();
         if !target.matches_user_and_author_rules() {
@@ -869,18 +883,6 @@ pub trait TElement:
 
         doc_rules_apply
     }
-
-    /// Does a rough (and cheap) check for whether or not transitions might need to be updated that
-    /// will quickly return false for the common case of no transitions specified or running. If
-    /// this returns false, we definitely don't need to update transitions but if it returns true
-    /// we can perform the more thoroughgoing check, needs_transitions_update, to further
-    /// reduce the possibility of false positives.
-    #[cfg(feature = "gecko")]
-    fn might_need_transitions_update(
-        &self,
-        old_values: Option<&ComputedValues>,
-        new_values: &ComputedValues,
-    ) -> bool;
 
     /// Returns true if one of the transitions needs to be updated on this element. We check all
     /// the transition properties to make sure that updating transitions is necessary.

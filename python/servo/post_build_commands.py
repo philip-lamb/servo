@@ -79,6 +79,7 @@ class PostBuildCommands(CommandBase):
         help="Command-line arguments to be passed through to Servo")
     def run(self, params, release=False, dev=False, android=None, debug=False, debugger=None,
             headless=False, software=False, bin=None, emulator=False, usb=False, nightly=None):
+        self.set_run_env(android is not None)
         env = self.build_env()
         env["RUST_BACKTRACE"] = "1"
 
@@ -161,8 +162,8 @@ class PostBuildCommands(CommandBase):
                     command = rustCommand
 
             # Prepend the debugger args.
-            args = ([command] + self.debuggerInfo.args +
-                    args + params)
+            args = ([command] + self.debuggerInfo.args
+                    + args + params)
         else:
             args = args + params
 
@@ -208,8 +209,8 @@ class PostBuildCommands(CommandBase):
         env = self.build_env()
         env["RUST_BACKTRACE"] = "1"
 
-        servo_cmd = [bin or self.get_nightly_binary_path(nightly) or
-                     self.get_binary_path(release, dev)] + params
+        servo_cmd = [bin or self.get_nightly_binary_path(nightly)
+                     or self.get_binary_path(release, dev)] + params
         rr_cmd = ['rr', '--fatal-errors', 'record']
         try:
             check_call(rr_cmd + servo_cmd)
@@ -272,7 +273,9 @@ class PostBuildCommands(CommandBase):
 
         features += self.pick_media_stack(media_stack, target)
 
-        returncode = self.run_cargo_build_like_command("doc", params, features=features, **kwargs)
+        env = self.build_env(target=target, is_build=True, features=features)
+
+        returncode = self.run_cargo_build_like_command("doc", params, features=features, env=env, **kwargs)
         if returncode:
             return returncode
 

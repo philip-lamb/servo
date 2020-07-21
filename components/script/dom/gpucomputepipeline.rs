@@ -7,7 +7,7 @@ use crate::dom::bindings::codegen::Bindings::GPUComputePipelineBinding::GPUCompu
 use crate::dom::bindings::reflector::reflect_dom_object;
 use crate::dom::bindings::reflector::Reflector;
 use crate::dom::bindings::root::DomRoot;
-use crate::dom::bindings::str::DOMString;
+use crate::dom::bindings::str::USVString;
 use crate::dom::globalscope::GlobalScope;
 use dom_struct::dom_struct;
 use webgpu::WebGPUComputePipeline;
@@ -15,7 +15,7 @@ use webgpu::WebGPUComputePipeline;
 #[dom_struct]
 pub struct GPUComputePipeline {
     reflector_: Reflector,
-    label: DomRefCell<Option<DOMString>>,
+    label: DomRefCell<Option<USVString>>,
     compute_pipeline: WebGPUComputePipeline,
 }
 
@@ -44,12 +44,12 @@ impl GPUComputePipeline {
 
 impl GPUComputePipelineMethods for GPUComputePipeline {
     /// https://gpuweb.github.io/gpuweb/#dom-gpuobjectbase-label
-    fn GetLabel(&self) -> Option<DOMString> {
+    fn GetLabel(&self) -> Option<USVString> {
         self.label.borrow().clone()
     }
 
     /// https://gpuweb.github.io/gpuweb/#dom-gpuobjectbase-label
-    fn SetLabel(&self, value: Option<DOMString>) {
+    fn SetLabel(&self, value: Option<USVString>) {
         *self.label.borrow_mut() = value;
     }
 }

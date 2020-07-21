@@ -27,7 +27,7 @@ use crossbeam_channel::{Receiver, Sender};
 use embedder_traits::resources::{self, Resource};
 use euclid::{default::Size2D as UntypedSize2D, Point2D, Rect, Scale, Size2D};
 use fnv::FnvHashMap;
-use fxhash::{FxHashMap, FxHashSet};
+use fxhash::FxHashMap;
 use gfx::font_cache_thread::FontCacheThread;
 use gfx::font_context;
 use gfx_traits::{node_id_from_scroll_id, Epoch};
@@ -37,7 +37,8 @@ use layout::context::LayoutContext;
 use layout::display_list::{DisplayListBuilder, WebRenderImageInfo};
 use layout::layout_debug;
 use layout::query::{
-    process_content_box_request, process_content_boxes_request, LayoutRPCImpl, LayoutThreadData,
+    process_content_box_request, process_content_boxes_request, process_resolved_font_style_query,
+    LayoutRPCImpl, LayoutThreadData,
 };
 use layout::query::{process_element_inner_text_query, process_node_geometry_request};
 use layout::query::{process_node_scroll_area_request, process_node_scroll_id_request};
@@ -80,11 +81,10 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::Duration;
-use style::animation::ElementAnimationSet;
+use style::animation::DocumentAnimationSet;
 use style::context::{
     QuirksMode, RegisteredSpeculativePainter, RegisteredSpeculativePainters, SharedStyleContext,
 };
-use style::dom::OpaqueNode;
 use style::dom::{TDocument, TElement, TNode};
 use style::driver;
 use style::error_reporting::RustLogReporter;
@@ -134,7 +134,7 @@ pub struct LayoutThread {
     font_cache_sender: IpcSender<()>,
 
     /// A means of communication with the background hang monitor.
-    background_hang_monitor: Option<Box<dyn BackgroundHangMonitor>>,
+    background_hang_monitor: Box<dyn BackgroundHangMonitor>,
 
     /// The channel on which messages can be sent to the script thread.
     script_chan: IpcSender<ConstellationControlMsg>,
@@ -234,7 +234,7 @@ impl LayoutThreadFactory for LayoutThread {
         is_iframe: bool,
         chan: (Sender<Msg>, Receiver<Msg>),
         pipeline_port: IpcReceiver<LayoutControlMsg>,
-        background_hang_monitor_register: Option<Box<dyn BackgroundHangMonitorRegister>>,
+        background_hang_monitor_register: Box<dyn BackgroundHangMonitorRegister>,
         constellation_chan: IpcSender<ConstellationMsg>,
         script_chan: IpcSender<ConstellationControlMsg>,
         image_cache: Arc<dyn ImageCache>,
@@ -267,13 +267,13 @@ impl LayoutThreadFactory for LayoutThread {
                     // Ensures layout thread is destroyed before we send shutdown message
                     let sender = chan.0;
 
-                    let background_hang_monitor = background_hang_monitor_register.map(|bhm| {
-                        bhm.register_component(
+                    let background_hang_monitor = background_hang_monitor_register
+                        .register_component(
                             MonitoredComponentId(id, MonitoredComponentType::Layout),
                             Duration::from_millis(1000),
                             Duration::from_millis(5000),
-                        )
-                    });
+                            None,
+                        );
 
                     let layout = LayoutThread::new(
                         id,
@@ -450,7 +450,7 @@ impl LayoutThread {
         is_iframe: bool,
         port: Receiver<Msg>,
         pipeline_port: IpcReceiver<LayoutControlMsg>,
-        background_hang_monitor: Option<Box<dyn BackgroundHangMonitor>>,
+        background_hang_monitor: Box<dyn BackgroundHangMonitor>,
         constellation_chan: IpcSender<ConstellationMsg>,
         script_chan: IpcSender<ConstellationControlMsg>,
         image_cache: Arc<dyn ImageCache>,
@@ -525,6 +525,7 @@ impl LayoutThread {
                 scroll_id_response: None,
                 scroll_area_response: Rect::zero(),
                 resolved_style_response: String::new(),
+                resolved_font_style_response: None,
                 offset_parent_response: OffsetParentResponse::empty(),
                 scroll_offsets: HashMap::new(),
                 text_index_response: TextIndexResponse(None),
@@ -566,7 +567,7 @@ impl LayoutThread {
         snapshot_map: &'a SnapshotMap,
         origin: ImmutableOrigin,
         animation_timeline_value: f64,
-        animation_states: ServoArc<RwLock<FxHashMap<OpaqueNode, ElementAnimationSet>>>,
+        animations: &DocumentAnimationSet,
         stylesheets_changed: bool,
     ) -> LayoutContext<'a> {
         let traversal_flags = match stylesheets_changed {
@@ -582,7 +583,7 @@ impl LayoutThread {
                 options: GLOBAL_STYLE_DATA.options.clone(),
                 guards,
                 visited_styles_enabled: false,
-                animation_states,
+                animations: animations.clone(),
                 registered_speculative_painters: &self.registered_painters,
                 current_time_for_animations: animation_timeline_value,
                 traversal_flags,
@@ -618,8 +619,7 @@ impl LayoutThread {
             Msg::SetNavigationStart(..) => LayoutHangAnnotation::SetNavigationStart,
         };
         self.background_hang_monitor
-            .as_ref()
-            .map(|bhm| bhm.notify_activity(HangAnnotation::Layout(hang_annotation)));
+            .notify_activity(HangAnnotation::Layout(hang_annotation));
     }
 
     /// Receives and dispatches messages from the script and constellation threads
@@ -631,9 +631,7 @@ impl LayoutThread {
         }
 
         // Notify the background-hang-monitor we are waiting for an event.
-        self.background_hang_monitor
-            .as_ref()
-            .map(|bhm| bhm.notify_wait());
+        self.background_hang_monitor.notify_wait();
 
         let request = select! {
             recv(self.pipeline_port) -> msg => Request::FromPipeline(msg.unwrap()),
@@ -850,9 +848,7 @@ impl LayoutThread {
     }
 
     fn exit_now(&mut self) {
-        self.background_hang_monitor
-            .as_ref()
-            .map(|bhm| bhm.unregister());
+        self.background_hang_monitor.unregister();
     }
 
     fn handle_add_stylesheet(&self, stylesheet: &Stylesheet, guard: &SharedRwLockReadGuard) {
@@ -913,6 +909,9 @@ impl LayoutThread {
                         },
                         &QueryMsg::ResolvedStyleQuery(_, _, _) => {
                             rw_data.resolved_style_response = String::new();
+                        },
+                        &QueryMsg::ResolvedFontStyleQuery(_, _, _) => {
+                            rw_data.resolved_font_style_response = None;
                         },
                         &QueryMsg::OffsetParentQuery(_) => {
                             rw_data.offset_parent_response = OffsetParentResponse::empty();
@@ -1060,7 +1059,7 @@ impl LayoutThread {
             &map,
             origin,
             data.animation_timeline_value,
-            data.animations.clone(),
+            &data.animations,
             data.stylesheets_changed,
         );
 
@@ -1206,6 +1205,11 @@ impl LayoutThread {
                         fragment_tree,
                     );
                 },
+                &QueryMsg::ResolvedFontStyleQuery(node, ref property, ref value) => {
+                    let node = unsafe { ServoLayoutNode::new(&node) };
+                    rw_data.resolved_font_style_response =
+                        process_resolved_font_style_query(node, property, value);
+                },
                 &QueryMsg::OffsetParentQuery(node) => {
                     rw_data.offset_parent_response = process_offset_parent_query(node);
                 },
@@ -1282,7 +1286,7 @@ impl LayoutThread {
         context: &mut LayoutContext,
     ) {
         Self::cancel_animations_for_nodes_not_in_fragment_tree(
-            &mut *(context.style_context.animation_states.write()),
+            &context.style_context.animations,
             &fragment_tree,
         );
 
@@ -1370,16 +1374,17 @@ impl LayoutThread {
     /// TODO(mrobinson): We should look into a way of doing this during flow tree construction.
     /// This also doesn't yet handles nodes that have been reparented.
     fn cancel_animations_for_nodes_not_in_fragment_tree(
-        animation_states: &mut FxHashMap<OpaqueNode, ElementAnimationSet>,
+        animations: &DocumentAnimationSet,
         root: &FragmentTree,
     ) {
         // Assume all nodes have been removed until proven otherwise.
-        let mut invalid_nodes: FxHashSet<OpaqueNode> = animation_states.keys().cloned().collect();
+        let mut animations = animations.sets.write();
+        let mut invalid_nodes = animations.keys().cloned().collect();
         root.remove_nodes_in_fragment_tree_from_set(&mut invalid_nodes);
 
         // Cancel animations for any nodes that are no longer in the fragment tree.
         for node in &invalid_nodes {
-            if let Some(state) = animation_states.get_mut(node) {
+            if let Some(state) = animations.get_mut(node) {
                 state.cancel_all_animations();
             }
         }

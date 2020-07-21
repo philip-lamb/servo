@@ -45,7 +45,6 @@ use js::jsapi::ContextOptionsRef;
 use js::jsapi::GetPromiseUserInputEventHandlingState;
 use js::jsapi::InitConsumeStreamCallback;
 use js::jsapi::InitDispatchToEventLoop;
-use js::jsapi::JS_SetFutexCanWait;
 use js::jsapi::MimeType;
 use js::jsapi::PromiseUserInputEventHandlingState;
 use js::jsapi::StreamConsumer as JSStreamConsumer;
@@ -53,7 +52,10 @@ use js::jsapi::{BuildIdCharVector, DisableIncrementalGC, GCDescription, GCProgre
 use js::jsapi::{Dispatchable as JSRunnable, Dispatchable_MaybeShuttingDown};
 use js::jsapi::{HandleObject, Heap, JobQueue};
 use js::jsapi::{JSContext as RawJSContext, JSTracer, SetDOMCallbacks, SetGCSliceCallback};
-use js::jsapi::{JSGCInvocationKind, JSGCStatus, JS_AddExtraGCRootsTracer, JS_SetGCCallback};
+use js::jsapi::{
+    JSGCInvocationKind, JSGCStatus, JS_AddExtraGCRootsTracer, JS_RequestInterruptCallback,
+    JS_SetGCCallback,
+};
 use js::jsapi::{JSGCMode, JSGCParamKey, JS_SetGCParameter, JS_SetGlobalJitCompilerOption};
 use js::jsapi::{
     JSJitCompilerOption, JS_SetOffthreadIonCompilationEnabled, JS_SetParallelParsingEnabled,
@@ -206,7 +208,12 @@ unsafe extern "C" fn enqueue_promise_job(
     let mut result = false;
     wrap_panic(&mut || {
         let microtask_queue = &*(extra as *const MicrotaskQueue);
-        let global = GlobalScope::from_object(incumbent_global.get());
+        let global = if !incumbent_global.is_null() {
+            GlobalScope::from_object(incumbent_global.get())
+        } else {
+            let realm = AlreadyInRealm::assert_for_cx(cx);
+            GlobalScope::from_context(*cx, InRealm::in_realm(&realm))
+        };
         let pipeline = global.pipeline_id();
         let interaction = if promise.get().is_null() {
             PromiseUserInputEventHandlingState::DontCare
@@ -451,14 +458,6 @@ unsafe fn new_rt_and_cx_with_parent(
     let (cx, runtime) = if let Some(parent) = parent {
         let runtime = RustRuntime::create_with_parent(parent);
         let cx = runtime.cx();
-
-        // Note: this enables blocking on an Atomics.wait,
-        // which should only be enabled for an agent whose [[CanBlock]] is true.
-        // Currently only a dedicated worker agent uses a parent,
-        // and this agent can block.
-        // See https://html.spec.whatwg.org/multipage/#integration-with-the-javascript-agent-cluster-formalism
-        JS_SetFutexCanWait(cx);
-
         (cx, runtime)
     } else {
         let runtime = RustRuntime::new(JS_ENGINE.lock().unwrap().as_ref().unwrap().clone());
@@ -848,6 +847,34 @@ unsafe fn set_gc_zeal_options(cx: *mut RawJSContext) {
 #[allow(unsafe_code)]
 #[cfg(not(feature = "debugmozjs"))]
 unsafe fn set_gc_zeal_options(_: *mut RawJSContext) {}
+
+#[repr(transparent)]
+/// A wrapper around a JSContext that is Send,
+/// enabling an interrupt to be requested
+/// from a thread other than the one running JS using that context.
+pub struct ContextForRequestInterrupt(*mut RawJSContext);
+
+impl ContextForRequestInterrupt {
+    pub fn new(context: *mut RawJSContext) -> ContextForRequestInterrupt {
+        ContextForRequestInterrupt(context)
+    }
+
+    #[allow(unsafe_code)]
+    /// Can be called from any thread, to request the callback set by
+    /// JS_AddInterruptCallback to be called
+    /// on the thread where that context is running.
+    pub fn request_interrupt(&self) {
+        unsafe {
+            JS_RequestInterruptCallback(self.0);
+        }
+    }
+}
+
+#[allow(unsafe_code)]
+/// It is safe to call `JS_RequestInterruptCallback(cx)` from any thread.
+/// See the docs for the corresponding `requestInterrupt` method,
+/// at `mozjs/js/src/vm/JSContext.h`.
+unsafe impl Send for ContextForRequestInterrupt {}
 
 #[derive(Clone, Copy)]
 #[repr(transparent)]

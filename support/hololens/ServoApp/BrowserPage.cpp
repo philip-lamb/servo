@@ -3,15 +3,11 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 #include "pch.h"
-#include "logs.h"
+#include "strutils.h"
 #include "BrowserPage.h"
 #include "BrowserPage.g.cpp"
-#include "DefaultUrl.h"
-
-#include "winrt/Microsoft.UI.Xaml.Controls.h"
-#include "winrt/Microsoft.UI.Xaml.XamlTypeInfo.h"
-#include "winrt/Windows.UI.Text.h"
-#include "winrt/Windows.UI.Xaml.Documents.h" // For Run.Text()
+#include "ConsoleLog.g.cpp"
+#include "Devtools/Client.h"
 
 using namespace std::placeholders;
 using namespace winrt::Windows::Foundation;
@@ -19,14 +15,18 @@ using namespace winrt::Windows::UI::Xaml;
 using namespace winrt::Windows::UI::Core;
 using namespace winrt::Windows::UI::ViewManagement;
 using namespace winrt::Windows::ApplicationModel::Core;
+using namespace winrt::Windows::ApplicationModel::Resources;
 using namespace winrt::Windows::UI::Notifications;
+using namespace winrt::Windows::Data::Json;
 using namespace winrt::Windows::Data::Xml::Dom;
+using namespace winrt::servo;
 
 namespace winrt::ServoApp::implementation {
 
 BrowserPage::BrowserPage() {
   InitializeComponent();
   BindServoEvents();
+  mLogs = winrt::single_threaded_observable_vector<IInspectable>();
 }
 
 void BrowserPage::BindServoEvents() {
@@ -45,6 +45,7 @@ void BrowserPage::BindServoEvents() {
     reloadButton().Visibility(Visibility::Collapsed);
     stopButton().IsEnabled(true);
     stopButton().Visibility(Visibility::Visible);
+    devtoolsButton().IsEnabled(true);
   });
   servoControl().OnLoadEnded([=] {
     urlbarLoadingIndicator().IsActive(false);
@@ -63,26 +64,25 @@ void BrowserPage::BindServoEvents() {
   urlTextbox().GotFocus(std::bind(&BrowserPage::OnURLFocused, this, _1));
   servoControl().OnMediaSessionMetadata(
       [=](hstring title, hstring artist, hstring album) {});
-  servoControl().OnMediaSessionPlaybackStateChange(
-      [=](const auto &, int state) {
-        if (state == servo::Servo::MediaSessionPlaybackState::None) {
-          mediaControls().Visibility(Visibility::Collapsed);
-          return;
-        }
-        mediaControls().Visibility(Visibility::Visible);
-        playButton().Visibility(
-            state == servo::Servo::MediaSessionPlaybackState::Paused
-                ? Visibility::Visible
-                : Visibility::Collapsed);
-        pauseButton().Visibility(
-            state == servo::Servo::MediaSessionPlaybackState::Paused
-                ? Visibility::Collapsed
-                : Visibility::Visible);
-      });
+  servoControl().OnMediaSessionPlaybackStateChange([=](const auto &,
+                                                       int state) {
+    if (state == Servo::MediaSessionPlaybackState::None) {
+      mediaControls().Visibility(Visibility::Collapsed);
+      return;
+    }
+    mediaControls().Visibility(Visibility::Visible);
+    playButton().Visibility(state == Servo::MediaSessionPlaybackState::Paused
+                                ? Visibility::Visible
+                                : Visibility::Collapsed);
+    pauseButton().Visibility(state == Servo::MediaSessionPlaybackState::Paused
+                                 ? Visibility::Collapsed
+                                 : Visibility::Visible);
+  });
   servoControl().OnDevtoolsStatusChanged(
-      [=](DevtoolsStatus status, unsigned int port) {
+      [=](DevtoolsStatus status, unsigned int port, hstring token) {
         mDevtoolsStatus = status;
         mDevtoolsPort = port;
+        mDevtoolsToken = token;
       });
   Window::Current().VisibilityChanged(
       [=](const auto &, const VisibilityChangedEventArgs &args) {
@@ -99,16 +99,20 @@ void BrowserPage::OnURLKeyboardAccelerator(
   urlTextbox().Focus(FocusState::Programmatic);
 }
 
-void BrowserPage::LoadServoURI(Uri uri) {
+void BrowserPage::LoadFXRURI(Uri uri) {
   auto scheme = uri.SchemeName();
-
-  if (scheme != SERVO_SCHEME) {
-    log("Unexpected URL: ", uri.RawUri().c_str());
-    return;
-  }
   std::wstring raw{uri.RawUri()};
-  auto raw2 = raw.substr(SERVO_SCHEME_SLASH_SLASH.size());
-  servoControl().LoadURIOrSearch(raw2);
+  if (scheme == FXR_SCHEME) {
+    auto raw2 = raw.substr(FXR_SCHEME_SLASH_SLASH.size());
+    servoControl().LoadURIOrSearch(raw2);
+    SetTransientMode(false);
+  } else if (scheme == FXRMIN_SCHEME) {
+    auto raw2 = raw.substr(FXRMIN_SCHEME_SLASH_SLASH.size());
+    servoControl().LoadURIOrSearch(raw2);
+    SetTransientMode(true);
+  } else {
+    log(L"Unexpected URL: ", uri.RawUri().c_str());
+  }
 }
 
 void BrowserPage::SetTransientMode(bool transient) {
@@ -147,7 +151,7 @@ void BrowserPage::OnStopButtonClicked(IInspectable const &,
 
 void BrowserPage::OnHomeButtonClicked(IInspectable const &,
                                       RoutedEventArgs const &) {
-  servoControl().LoadURIOrSearch(DEFAULT_URL);
+  servoControl().GoHome();
 }
 
 // Given a pref, update its associated UI control.
@@ -181,6 +185,9 @@ void BrowserPage::BuildPrefList() {
   // it's pretty difficiult to have different controls depending
   // on the pref type.
   prefList().Children().Clear();
+  auto resourceLoader = ResourceLoader::GetForCurrentView();
+  auto resetStr =
+      resourceLoader.GetString(L"devtoolsPreferenceResetButton/Content");
   for (auto pref : ServoControl().Preferences()) {
     auto value = pref.Value();
     auto type = value.as<IPropertyValue>().Type();
@@ -244,7 +251,7 @@ void BrowserPage::BuildPrefList() {
       ctrl->Margin({4, 0, 40, 0});
       stack.Children().Append(*ctrl);
       auto reset = Controls::Button();
-      reset.Content(winrt::box_value(L"reset"));
+      reset.Content(winrt::box_value(resetStr));
       reset.IsEnabled(!pref.IsDefault());
       reset.Click([=](const auto &, auto const &) {
         auto upref = ServoControl().ResetPref(pref.Key());
@@ -272,11 +279,37 @@ void BrowserPage::OnPrefererenceSearchboxEdited(
   }
 }
 
+void BrowserPage::ClearConsole() {
+  Dispatcher().RunAsync(CoreDispatcherPriority::High, [=] { mLogs.Clear(); });
+}
+
+void BrowserPage::OnDevtoolsMessage(DevtoolsMessageLevel level, hstring source,
+                                    hstring body) {
+  Dispatcher().RunAsync(CoreDispatcherPriority::High, [=] {
+    auto glyphColor = UI::Colors::Transparent();
+    auto glyph = L"";
+    if (level == servo::DevtoolsMessageLevel::Error) {
+      glyphColor = UI::Colors::Red();
+      glyph = L"\xEA39"; // ErrorBadge
+    } else if (level == servo::DevtoolsMessageLevel::Warn) {
+      glyphColor = UI::Colors::Orange();
+      glyph = L"\xE7BA"; // Warning
+    }
+    mLogs.Append(make<ConsoleLog>(glyphColor, glyph, body, source));
+  });
+}
+
+void BrowserPage::OnDevtoolsDetached() {}
+
 void BrowserPage::OnDevtoolsButtonClicked(IInspectable const &,
                                           RoutedEventArgs const &) {
   if (toolbox().Visibility() == Visibility::Visible) {
     prefList().Children().Clear();
     toolbox().Visibility(Visibility::Collapsed);
+    ClearConsole();
+    if (mDevtoolsClient != nullptr) {
+      mDevtoolsClient->Stop();
+    }
     return;
   }
 
@@ -284,18 +317,34 @@ void BrowserPage::OnDevtoolsButtonClicked(IInspectable const &,
 
   BuildPrefList();
 
-  // FIXME: we could use template + binding for this.
-  auto ok = mDevtoolsStatus == DevtoolsStatus::Running ? Visibility::Visible
-                                                       : Visibility::Collapsed;
-  auto ko = mDevtoolsStatus == DevtoolsStatus::Failed ? Visibility::Visible
-                                                      : Visibility::Collapsed;
-  auto wip = mDevtoolsStatus == DevtoolsStatus::Stopped ? Visibility::Visible
-                                                        : Visibility::Collapsed;
-  DevtoolsStatusOK().Visibility(ok);
-  DevtoolsStatusKO().Visibility(ko);
-  DevtoolsStatusWIP().Visibility(wip);
+  auto resourceLoader = ResourceLoader::GetForCurrentView();
   if (mDevtoolsStatus == DevtoolsStatus::Running) {
-    DevtoolsPort().Text(std::to_wstring(mDevtoolsPort));
+    hstring port = to_hstring(mDevtoolsPort);
+    if (mDevtoolsClient == nullptr) {
+      DevtoolsDelegate *dd = static_cast<DevtoolsDelegate *>(this);
+      mDevtoolsClient = std::make_unique<DevtoolsClient>(L"localhost", port,
+                                                         mDevtoolsToken, *dd);
+    }
+    mDevtoolsClient->Run();
+    std::wstring message =
+        resourceLoader.GetString(L"devtoolsStatus/Running").c_str();
+    hstring formatted{format(message, port.c_str())};
+    OnDevtoolsMessage(servo::DevtoolsMessageLevel::None, L"", formatted);
+  } else if (mDevtoolsStatus == DevtoolsStatus::Failed) {
+    auto body = resourceLoader.GetString(L"devtoolsStatus/Failed");
+    OnDevtoolsMessage(servo::DevtoolsMessageLevel::Error, L"", body);
+  } else if (mDevtoolsStatus == DevtoolsStatus::Stopped) {
+    auto body = resourceLoader.GetString(L"devtoolsStatus/Stopped");
+    OnDevtoolsMessage(servo::DevtoolsMessageLevel::None, L"", body);
+  }
+}
+
+void BrowserPage::OnJSInputEdited(IInspectable const &,
+                                  Input::KeyRoutedEventArgs const &e) {
+  if (e.Key() == Windows::System::VirtualKey::Enter) {
+    auto input = JSInput().Text();
+    JSInput().Text(L"");
+    mDevtoolsClient->Evaluate(input);
   }
 }
 
@@ -312,12 +361,12 @@ void BrowserPage::OnURLEdited(IInspectable const &,
 void BrowserPage::OnMediaControlsPlayClicked(IInspectable const &,
                                              RoutedEventArgs const &) {
   servoControl().SendMediaSessionAction(
-      static_cast<int32_t>(servo::Servo::MediaSessionActionType::Play));
+      static_cast<int32_t>(Servo::MediaSessionActionType::Play));
 }
 void BrowserPage::OnMediaControlsPauseClicked(IInspectable const &,
                                               RoutedEventArgs const &) {
   servoControl().SendMediaSessionAction(
-      static_cast<int32_t>(servo::Servo::MediaSessionActionType::Pause));
+      static_cast<int32_t>(Servo::MediaSessionActionType::Pause));
 }
 
 } // namespace winrt::ServoApp::implementation

@@ -4,7 +4,7 @@ components:
     workerType: ci
     schedulerId: taskcluster-github
     deadline: "24 hours"
-    image: webplatformtests/wpt:0.37
+    image: webplatformtests/wpt:0.42
     maxRunTime: 7200
     artifacts:
       public/results:
@@ -21,8 +21,13 @@ components:
     vars:
       test-type: reftest
 
-  wpt-wdspec:
+  wpt-print-reftest:
     chunks: 1
+    vars:
+      test-type: print-reftest
+
+  wpt-wdspec:
+    chunks: 2
     vars:
       test-type: wdspec
 
@@ -123,6 +128,9 @@ components:
         - affected_tests
 
 tasks:
+  # The scheduling order of tasks is NOT determined by the order in which they
+  # are defined, but by their dependencies (depends-on).
+
   # Run full suites on push
   - $map:
       for:
@@ -188,6 +196,63 @@ tasks:
             - vars:
                 browser: servo
                 channel: nightly
+              use:
+                - trigger-daily
+                - trigger-push
+          do:
+            - ${vars.browser}-${vars.channel}-${vars.suite}:
+                use:
+                  - wpt-base
+                  - run-options
+                  - wpt-run
+                  - browser-${vars.browser}
+                  - wpt-${vars.suite}
+                description: >-
+                  A subset of WPT's "${vars.suite}" tests (chunk number ${chunks.id}
+                  of ${chunks.total}), run in the ${vars.channel} release of
+                  ${vars.browser}.
+
+  # print-reftest are currently only supported by Chrome and Firefox.
+  - $map:
+      for:
+        - vars:
+            suite: print-reftest
+      do:
+        $map:
+          for:
+            - vars:
+                browser: firefox
+                channel: nightly
+              use:
+                - trigger-master
+                - trigger-push
+            - vars:
+                browser: firefox
+                channel: beta
+              use:
+                - trigger-weekly
+                - trigger-push
+            - vars:
+                browser: firefox
+                channel: stable
+              use:
+                - trigger-daily
+                - trigger-push
+            - vars:
+                browser: chrome
+                channel: dev
+              use:
+                - trigger-master
+                - trigger-push
+            - vars:
+                browser: chrome
+                channel: beta
+              use:
+                - trigger-weekly
+                - trigger-push
+            - vars:
+                browser: chrome
+                channel: stable
               use:
                 - trigger-daily
                 - trigger-push
@@ -480,3 +545,14 @@ tasks:
       schedule-if:
         run-job:
           - wptrunner_infrastructure
+
+  # Note: even though sink-task does not have `depends-on`, it depends on all
+  # other tasks (dynamically added by tools/ci/tc/decision.py).
+  - sink-task:
+      description: >-
+        Sink task for all other tasks; indicates success
+      use:
+        - wpt-base
+        - trigger-pr
+      command: "./wpt tc-sink-task"
+      requires: all-resolved
