@@ -553,7 +553,7 @@ dependencies = [
  "style",
  "style_traits",
  "surfman",
- "surfman-chains",
+ "surfman-chains 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "surfman-chains-api",
  "time",
  "webrender",
@@ -5095,7 +5095,7 @@ dependencies = [
  "servo-media",
  "sparkle",
  "surfman",
- "surfman-chains",
+ "surfman-chains 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "surfman-chains-api",
  "webxr",
 ]
@@ -5454,9 +5454,10 @@ dependencies = [
  "libloading 0.5.2",
  "libservo",
  "log",
+ "serde_json",
  "servo-media",
  "surfman",
- "surfman-chains",
+ "surfman-chains 0.4.0 (git+https://github.com/asajeffrey/surfman-chains)",
  "surfman-chains-api",
  "webxr",
  "webxr-api",
@@ -5470,6 +5471,7 @@ dependencies = [
  "backtrace",
  "cbindgen",
  "env_logger",
+ "keyboard-types",
  "lazy_static",
  "libc",
  "log",
@@ -5826,6 +5828,19 @@ dependencies = [
  "winit",
  "wio",
  "x11",
+]
+
+[[package]]
+name = "surfman-chains"
+version = "0.4.0"
+source = "git+https://github.com/asajeffrey/surfman-chains#e6254e05883e276e96c5978f78c8a5992b2b9059"
+dependencies = [
+ "euclid",
+ "fnv",
+ "log",
+ "sparkle",
+ "surfman",
+ "surfman-chains-api",
 ]
 
 [[package]]
@@ -6848,7 +6863,7 @@ version = "0.0.1"
 dependencies = [
  "euclid",
  "surfman",
- "surfman-chains",
+ "surfman-chains 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -6875,7 +6890,7 @@ dependencies = [
  "serde",
  "sparkle",
  "surfman",
- "surfman-chains",
+ "surfman-chains 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "time",
  "webxr-api",
  "winapi",

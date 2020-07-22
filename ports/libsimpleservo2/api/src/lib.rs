@@ -11,12 +11,13 @@ pub use servo::config::prefs::{add_user_prefs, PrefValue};
 pub use servo::embedder_traits::{
     ContextMenuResult, MediaSessionPlaybackState, PermissionPrompt, PermissionRequest, PromptResult,
 };
+pub use servo::msg::constellation_msg::InputMethodType;
 pub use servo::script_traits::{MediaSessionActionType, MouseButton};
+pub use servo::webrender_api::units::DeviceIntRect;
 pub use servo::keyboard_types::{Key};
 
 use getopts::Options;
 use ipc_channel::ipc::IpcSender;
-use servo::canvas::{SurfaceProviders, WebGlExecutor};
 use servo::compositing::windowing::{
     AnimationState, EmbedderCoordinates, EmbedderMethods, MouseWindowEvent, WindowEvent,
     WindowMethods,
@@ -30,8 +31,7 @@ use servo::euclid::{Point2D, Rect, Scale, Size2D, Vector2D};
 use servo::keyboard_types::{KeyState, KeyboardEvent};
 use servo::msg::constellation_msg::TraversalDirection;
 use servo::script_traits::{TouchEventType, TouchId};
-use servo::servo_config::opts;
-use servo::servo_config::{pref, set_pref};
+use servo::servo_config::{opts, pref};
 use servo::servo_url::ServoUrl;
 use servo::webrender_api::units::DevicePixel;
 use servo::webrender_api::ScrollLocation;
@@ -63,7 +63,6 @@ pub struct InitOptions {
     pub coordinates: Coordinates,
     pub density: f32,
     pub xr_discovery: Option<webxr::Discovery>,
-    pub enable_subpixel_text_antialiasing: bool,
     pub prefs: Option<HashMap<String, PrefValue>>,
 }
 
@@ -133,7 +132,9 @@ pub trait HostTrait {
     /// Servo finished shutting down.
     fn on_shutdown_complete(&self);
     /// A text input is focused.
-    fn on_ime_state_changed(&self, show: bool);
+    fn on_ime_show(&self, input_type: InputMethodType, text: Option<String>, bounds: DeviceIntRect);
+    /// Input lost focus
+    fn on_ime_hide(&self);
     /// Gets sytem clipboard contents.
     fn get_clipboard_contents(&self) -> Option<String>;
     /// Sets system clipboard contents.
@@ -145,7 +146,7 @@ pub trait HostTrait {
     /// Called when the media session position state is set.
     fn on_media_session_set_position_state(&self, duration: f64, position: f64, playback_rate: f64);
     /// Called when devtools server is started
-    fn on_devtools_started(&self, port: Result<u16, ()>);
+    fn on_devtools_started(&self, port: Result<u16, ()>, token: String);
 }
 
 struct ServoGfx {
@@ -239,21 +240,14 @@ pub fn init(
 ) -> Result<(), &'static str> {
     resources::set(Box::new(ResourceReaderInstance::new()));
 
-    let mut args = mem::replace(&mut init_opts.args, vec![]);
-    if !args.is_empty() {
-        // opts::from_cmdline_args expects the first argument to be the binary name.
-        args.insert(0, "servo".to_string());
-
-        set_pref!(
-            gfx.subpixel_text_antialiasing.enabled,
-            init_opts.enable_subpixel_text_antialiasing
-        );
-        opts::from_cmdline_args(Options::new(), &args);
-    }
-
     if let Some(prefs) = init_opts.prefs {
         add_user_prefs(prefs);
     }
+
+    let mut args = mem::replace(&mut init_opts.args, vec![]);
+    // opts::from_cmdline_args expects the first argument to be the binary name.
+    args.insert(0, "servo".to_string());
+    opts::from_cmdline_args(Options::new(), &args);
 
     let pref_url = ServoUrl::parse(&pref!(shell.homepage)).ok();
     let blank_url = ServoUrl::parse("about:blank").ok();
@@ -604,6 +598,11 @@ impl ServoGlue {
         }
     }
 
+    pub fn ime_dismissed(&mut self) -> Result<(), &'static str> {
+        info!("ime_dismissed");
+        self.process_event(WindowEvent::IMEDismissed)
+    }
+
     pub fn on_context_menu_closed(
         &mut self,
         result: ContextMenuResult,
@@ -769,11 +768,13 @@ impl ServoGlue {
 
                     let _ = sender.send(result);
                 },
-                EmbedderMsg::ShowIME(..) => {
-                    self.callbacks.host_callbacks.on_ime_state_changed(true);
+                EmbedderMsg::ShowIME(kind, text, bounds) => {
+                    self.callbacks
+                        .host_callbacks
+                        .on_ime_show(kind, text, bounds);
                 },
                 EmbedderMsg::HideIME => {
-                    self.callbacks.host_callbacks.on_ime_state_changed(false);
+                    self.callbacks.host_callbacks.on_ime_hide();
                 },
                 EmbedderMsg::MediaSessionEvent(event) => {
                     match event {
@@ -798,8 +799,10 @@ impl ServoGlue {
                             ),
                     };
                 },
-                EmbedderMsg::OnDevtoolsStarted(port) => {
-                    self.callbacks.host_callbacks.on_devtools_started(port);
+                EmbedderMsg::OnDevtoolsStarted(port, token) => {
+                    self.callbacks
+                        .host_callbacks
+                        .on_devtools_started(port, token);
                 },
                 EmbedderMsg::Status(..) |
                 EmbedderMsg::SelectFiles(..) |
@@ -961,8 +964,6 @@ impl EmbedderMethods for ServoEmbedderCallbacks {
     fn register_webxr(
         &mut self,
         registry: &mut webxr::MainThreadRegistry,
-        executor: WebGlExecutor,
-        surface_providers: SurfaceProviders,
         embedder_proxy: EmbedderProxy,
     ) {
         use ipc_channel::ipc::{self, IpcReceiver};
@@ -972,16 +973,6 @@ impl EmbedderMethods for ServoEmbedderCallbacks {
             self.xr_discovery.is_none(),
             "UWP builds should not be initialized with a WebXR Discovery object"
         );
-
-        struct ProviderRegistration(SurfaceProviders);
-        impl openxr::SurfaceProviderRegistration for ProviderRegistration {
-            fn register(&self, id: webxr_api::SessionId, provider: servo::canvas::SurfaceProvider) {
-                self.0.lock().unwrap().insert(id, provider);
-            }
-            fn clone(&self) -> Box<dyn openxr::SurfaceProviderRegistration> {
-                Box::new(ProviderRegistration(self.0.clone()))
-            }
-        }
 
         #[derive(Clone)]
         struct ContextMenuCallback(EmbedderProxy);
@@ -1021,22 +1012,9 @@ impl EmbedderMethods for ServoEmbedderCallbacks {
             }
         }
 
-        struct GlThread(WebGlExecutor);
-        impl openxr::GlThread for GlThread {
-            fn execute(&self, runnable: Box<dyn FnOnce(&surfman::Device) + Send>) {
-                let _ = self.0.send(runnable);
-            }
-            fn clone(&self) -> Box<dyn webxr::openxr::GlThread> {
-                Box::new(GlThread(self.0.clone()))
-            }
-        }
-
         if openxr::create_instance(false).is_ok() {
-            let discovery = openxr::OpenXrDiscovery::new(
-                Box::new(GlThread(executor)),
-                Box::new(ProviderRegistration(surface_providers)),
-                Box::new(ContextMenuCallback(embedder_proxy)),
-            );
+            let discovery =
+                openxr::OpenXrDiscovery::new(Box::new(ContextMenuCallback(embedder_proxy)));
             registry.register(discovery);
         } else {
             let msg =
@@ -1058,8 +1036,6 @@ impl EmbedderMethods for ServoEmbedderCallbacks {
     fn register_webxr(
         &mut self,
         registry: &mut webxr::MainThreadRegistry,
-        _executor: WebGlExecutor,
-        _surface_provider_registration: SurfaceProviders,
         _embedder_proxy: EmbedderProxy,
     ) {
         debug!("EmbedderMethods::register_xr");
@@ -1132,7 +1108,7 @@ impl ResourceReaderInstance {
 impl ResourceReaderMethods for ResourceReaderInstance {
     fn read(&self, res: Resource) -> Vec<u8> {
         Vec::from(match res {
-            Resource::Preferences => &include_bytes!("../../../../resources/prefs.json")[..],
+            Resource::Preferences => &include_bytes!(concat!(env!("OUT_DIR"), "/prefs.json"))[..],
             Resource::HstsPreloadList => {
                 &include_bytes!("../../../../resources/hsts_preload.json")[..]
             },

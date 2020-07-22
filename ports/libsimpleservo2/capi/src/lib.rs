@@ -19,8 +19,8 @@ use env_logger;
 use log::LevelFilter;
 use simpleservo2::{self, gl_glue, ServoGlue, SERVO};
 use simpleservo2::{
-    ContextMenuResult, Coordinates, EventLoopWaker, HostTrait, InitOptions, Key, MediaSessionActionType,
-    MediaSessionPlaybackState, MouseButton, PromptResult,
+    ContextMenuResult, Coordinates, DeviceIntRect, EventLoopWaker, HostTrait, InitOptions, Key,
+    InputMethodType, MediaSessionActionType, MediaSessionPlaybackState, MouseButton, PromptResult,
 };
 use std::ffi::{CStr, CString};
 #[cfg(target_os = "windows")]
@@ -211,7 +211,8 @@ pub struct CHostCallbacks {
     pub on_history_changed: extern "C" fn(can_go_back: bool, can_go_forward: bool),
     pub on_animating_changed: extern "C" fn(animating: bool),
     pub on_shutdown_complete: extern "C" fn(),
-    pub on_ime_state_changed: extern "C" fn(show: bool),
+    pub on_ime_show: extern "C" fn(text: *const c_char, x: i32, y: i32, width: i32, height: i32),
+    pub on_ime_hide: extern "C" fn(),
     pub get_clipboard_contents: extern "C" fn() -> *const c_char,
     pub set_clipboard_contents: extern "C" fn(contents: *const c_char),
     pub on_media_session_metadata:
@@ -227,7 +228,8 @@ pub struct CHostCallbacks {
         default: *const c_char,
         trusted: bool,
     ) -> *const c_char,
-    pub on_devtools_started: extern "C" fn(result: CDevtoolsServerState, port: c_uint),
+    pub on_devtools_started:
+        extern "C" fn(result: CDevtoolsServerState, port: c_uint, token: *const c_char),
     pub show_context_menu:
         extern "C" fn(title: *const c_char, items_list: *const *const c_char, items_size: u32),
     pub on_log_output: extern "C" fn(buffer: *const c_char, buffer_length: u32),
@@ -240,7 +242,6 @@ pub struct CInitOptions {
     pub width: i32,
     pub height: i32,
     pub density: f32,
-    pub enable_subpixel_text_antialiasing: bool,
     pub vslogger_mod_list: *const *const c_char,
     pub vslogger_mod_size: u32,
     pub native_widget: *mut c_void,
@@ -441,7 +442,6 @@ unsafe fn init(
         prefs,
         density: opts.density,
         xr_discovery: None,
-        enable_subpixel_text_antialiasing: opts.enable_subpixel_text_antialiasing,
      };
 
     let wakeup = Box::new(WakeupCallback::new(wakeup));
@@ -711,30 +711,6 @@ pub extern "C" fn click(x: f32, y: f32) {
     });
 }
 
-#[no_mangle]
-pub extern "C" fn media_session_action(action: CMediaSessionActionType) {
-    catch_any_panic(|| {
-        debug!("media_session_action");
-        call(|s| s.media_session_action(action.convert()));
-    });
-}
-
-#[no_mangle]
-pub extern "C" fn change_visibility(visible: bool) {
-    catch_any_panic(|| {
-        debug!("change_visibility");
-        call(|s| s.change_visibility(visible));
-    });
-}
-
-#[no_mangle]
-pub extern "C" fn fill_gl_texture(tex_id: u32, tex_width: i32, tex_height: i32) {
-    catch_any_panic(|| {
-        debug!("fill_gl_texture");
-        call(|s| s.fill_gl_texture(tex_id, tex_width, tex_height));
-    });
-}
-
 #[repr(C)]
 #[allow(non_camel_case_types)]
 pub enum CKeyType {
@@ -823,13 +799,12 @@ fn ckeytype_to_key(key_code: char, key_type: CKeyType) -> Key {
     }
 }
 
-
 #[no_mangle]
 pub unsafe extern "C" fn key_down(
-    key_code: char,
+    key_code: u32,
     key_type: CKeyType,
 ) {
-    let key = ckeytype_to_key(key_code, key_type);
+    let key = ckeytype_to_key(key_code as u8 as char, key_type);
     if key == Key::Unidentified {
         return;
     }
@@ -838,14 +813,46 @@ pub unsafe extern "C" fn key_down(
 
 #[no_mangle]
 pub unsafe extern "C" fn key_up(
-    key_code: char,
+    key_code: u32,
     key_type: CKeyType,
 ) {
-    let key = ckeytype_to_key(key_code, key_type);
+    let key = ckeytype_to_key(key_code as u8 as char, key_type);
     if key == Key::Unidentified {
         return;
     }
     let _ = call(move |s| s.key_up(key));
+}
+
+#[no_mangle]
+pub extern "C" fn media_session_action(action: CMediaSessionActionType) {
+    catch_any_panic(|| {
+        debug!("media_session_action");
+        call(|s| s.media_session_action(action.convert()));
+    });
+}
+
+#[no_mangle]
+pub extern "C" fn change_visibility(visible: bool) {
+    catch_any_panic(|| {
+        debug!("change_visibility");
+        call(|s| s.change_visibility(visible));
+    });
+}
+
+#[no_mangle]
+pub extern "C" fn ime_dismissed() {
+    catch_any_panic(|| {
+        debug!("ime_dismissed");
+        call(|s| s.ime_dismissed());
+    });
+}
+
+#[no_mangle]
+pub extern "C" fn fill_gl_texture(tex_id: u32, tex_width: i32, tex_height: i32) {
+    catch_any_panic(|| {
+        debug!("fill_gl_texture");
+        call(|s| s.fill_gl_texture(tex_id, tex_width, tex_height));
+    });
 }
 
 pub struct WakeupCallback(extern "C" fn());
@@ -917,9 +924,30 @@ impl HostTrait for HostCallbacks {
         (self.0.on_shutdown_complete)();
     }
 
-    fn on_ime_state_changed(&self, show: bool) {
-        debug!("on_ime_state_changed");
-        (self.0.on_ime_state_changed)(show);
+    fn on_ime_show(
+        &self,
+        _input_type: InputMethodType,
+        text: Option<String>,
+        bounds: DeviceIntRect,
+    ) {
+        debug!("on_ime_show");
+        let text = text.and_then(|s| CString::new(s).ok());
+        let text_ptr = text
+            .as_ref()
+            .map(|cstr| cstr.as_ptr())
+            .unwrap_or(std::ptr::null());
+        (self.0.on_ime_show)(
+            text_ptr,
+            bounds.origin.x,
+            bounds.origin.y,
+            bounds.size.width,
+            bounds.size.height,
+        );
+    }
+
+    fn on_ime_hide(&self) {
+        debug!("on_ime_hide");
+        (self.0.on_ime_hide)();
     }
 
     fn get_clipboard_contents(&self) -> Option<String> {
@@ -999,15 +1027,20 @@ impl HostTrait for HostCallbacks {
         Some(contents_str.to_owned())
     }
 
-    fn on_devtools_started(&self, port: Result<u16, ()>) {
+    fn on_devtools_started(&self, port: Result<u16, ()>, token: String) {
+        let token = CString::new(token).expect("Can't create string");
         match port {
             Ok(p) => {
                 info!("Devtools Server running on port {}", p);
-                (self.0.on_devtools_started)(CDevtoolsServerState::Started, p.into());
+                (self.0.on_devtools_started)(
+                    CDevtoolsServerState::Started,
+                    p.into(),
+                    token.as_ptr(),
+                );
             },
             Err(()) => {
                 error!("Error running devtools server");
-                (self.0.on_devtools_started)(CDevtoolsServerState::Error, 0);
+                (self.0.on_devtools_started)(CDevtoolsServerState::Error, 0, token.as_ptr());
             },
         }
     }
