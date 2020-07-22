@@ -159,9 +159,10 @@ struct ServoGfx {
 
 impl Drop for ServoGfx {
     fn drop(&mut self) {
+        let _ = self.device.make_context_current(&self.context);
         self.gl.delete_framebuffers(&[self.read_fbo, self.draw_fbo]);
         let _ = self.device.destroy_context(&mut self.context);
-     }
+    }
 }
 
 pub struct ServoGlue {
@@ -823,13 +824,13 @@ impl ServoGlue {
     pub fn fill_gl_texture(&mut self, tex_id: u32, tex_width: i32, tex_height: i32) -> Result<(), &'static str> {
         debug!("Filling texture {} {}x{}", tex_id, tex_width, tex_height);
 
-        // self.gfx.device
-        //     .make_gl_context_current()
-        //     .expect("Failed to make surfman context current");
-        // debug_assert_eq!(self.gfx.gl.get_error(), gl::NO_ERROR);
+        self.gfx.device
+            .make_context_current(&self.gfx.context)
+            .expect("Failed to make surfman context current");
+        debug_assert_eq!(self.gfx.gl.get_error(), gl::NO_ERROR);
 
         // Save the current GL state
-        debug!("Saving the GL context");
+        debug!("Saving GL FBO state");
         let mut bound_fbos = [0, 0];
         unsafe {
             self.gfx.gl.get_integer_v(gl::DRAW_FRAMEBUFFER_BINDING, &mut bound_fbos[0..]);
