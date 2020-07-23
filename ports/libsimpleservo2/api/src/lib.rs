@@ -152,16 +152,20 @@ pub trait HostTrait {
 struct ServoGfx {
     gl: Rc<dyn gl::Gl>,
     device: Device,
-    context: Context,
+    context: Option<Context>,
     read_fbo: gl::GLuint,
     draw_fbo: gl::GLuint,
 }
 
 impl Drop for ServoGfx {
     fn drop(&mut self) {
-        let _ = self.device.make_context_current(&self.context);
+        let _ = self.device.make_context_current(&self.context.as_mut().unwrap());
         self.gl.delete_framebuffers(&[self.read_fbo, self.draw_fbo]);
-        let _ = self.device.destroy_context(&mut self.context);
+        // We bootstrapped from a pre-existing context to get self.context,
+        // so we shouldn't destroy it by calling device.destroy_context,
+        // but instead leave that to the embedder who created it.
+        let c  = self.context.take().unwrap();
+        mem::forget(c);
     }
 }
 
@@ -299,7 +303,7 @@ pub fn init(
     let gfx = ServoGfx {
         gl: gl.clone(),
         device,
-        context,
+        context: Some(context),
         read_fbo,
         draw_fbo,
     };
@@ -825,7 +829,7 @@ impl ServoGlue {
         debug!("Filling texture {} {}x{}", tex_id, tex_width, tex_height);
 
         self.gfx.device
-            .make_context_current(&self.gfx.context)
+            .make_context_current(&self.gfx.context.as_mut().unwrap())
             .expect("Failed to make surfman context current");
         debug_assert_eq!(self.gfx.gl.get_error(), gl::NO_ERROR);
 
@@ -869,7 +873,7 @@ impl ServoGlue {
             }
 
             let surface_texture = self.gfx.device
-                .create_surface_texture(&mut self.gfx.context, surface)
+                .create_surface_texture(&mut self.gfx.context.as_mut().unwrap(), surface)
                 .unwrap();
             let read_texture_id = self.gfx.device.surface_texture_object(&surface_texture);
             let read_texture_target = self.gfx.device.surface_gl_texture_target();
@@ -929,7 +933,7 @@ impl ServoGlue {
             );
 
             let surface = self.gfx.device
-                .destroy_surface_texture(&mut self.gfx.context, surface_texture)
+                .destroy_surface_texture(&mut self.gfx.context.as_mut().unwrap(), surface_texture)
                 .unwrap();
             self.callbacks.webrender_surfman
                 .swap_chain().unwrap().recycle_surface(surface);
