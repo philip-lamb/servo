@@ -176,7 +176,7 @@ class MachCommands(CommandBase):
     def build(self, release=False, dev=False, jobs=None, params=None, media_stack=None,
               no_package=False, verbose=False, very_verbose=False,
               target=None, android=False, magicleap=False, libsimpleservo=False,
-              features=None, uwp=False, win_arm64=False, **kwargs):
+              libsimpleservo2=False, features=None, uwp=False, win_arm64=False, **kwargs):
         # Force the UWP-enabled target if the convenience UWP flags are passed.
         if uwp and not target:
             if win_arm64:
@@ -665,8 +665,8 @@ class MachCommands(CommandBase):
 
         status = self.run_cargo_build_like_command(
             "build", opts, env=env, verbose=verbose,
-            target=target, android=android, magicleap=magicleap, libsimpleservo=libsimpleservo, uwp=uwp,
-            features=features, **kwargs
+            target=target, android=android, magicleap=magicleap, libsimpleservo=libsimpleservo,
+            libsimpleservo2=libsimpleservo2, uwp=uwp, features=features, **kwargs
         )
 
         elapsed = time() - build_start
@@ -686,13 +686,13 @@ class MachCommands(CommandBase):
 
             if sys.platform == "win32":
                 servo_exe_dir = os.path.dirname(
-                    self.get_binary_path(release, dev, target=target, simpleservo=libsimpleservo)
+                    self.get_binary_path(release, dev, target=target, simpleservo=libsimpleservo, simpleservo2=libsimpleservo2)
                 )
                 assert os.path.exists(servo_exe_dir)
 
                 # on msvc builds, use editbin to change the subsystem to windows, but only
                 # on release builds -- on debug builds, it hides log output
-                if not dev and not libsimpleservo:
+                if not dev and not libsimpleservo and not libsimpleservo2:
                     call(["editbin", "/nologo", "/subsystem:windows", path.join(servo_exe_dir, "servo.exe")],
                          verbose=verbose)
                 # on msvc, we need to copy in some DLLs in to the servo.exe dir and the directory for unit tests.
@@ -737,7 +737,7 @@ class MachCommands(CommandBase):
 
             elif sys.platform == "darwin":
                 servo_exe_dir = os.path.dirname(
-                    self.get_binary_path(release, dev, target=target, simpleservo=libsimpleservo)
+                    self.get_binary_path(release, dev, target=target, simpleservo=libsimpleservo, simpleservo2=libsimpleservo2)
                 )
                 assert os.path.exists(servo_exe_dir)
 

@@ -356,7 +356,7 @@ class CommandBase(object):
         build_type = "release" if release else "debug"
         return path.join(base_path, build_type, apk_name)
 
-    def get_binary_path(self, release, dev, target=None, android=False, magicleap=False, simpleservo=False):
+    def get_binary_path(self, release, dev, target=None, android=False, magicleap=False, simpleservo=False, simpleservo2=False):
         # TODO(autrilla): this function could still use work - it shouldn't
         # handle quitting, or printing. It should return the path, or an error.
         base_path = self.get_target_dir()
@@ -373,7 +373,20 @@ class CommandBase(object):
             base_path = path.join(base_path, target)
 
         if simpleservo:
-            binary_name = "simpleservo.dll" if sys.platform == "win32" else "libsimpleservo.so"
+            if sys.platform == "win32":
+                binary_name = "simpleservo.dll"
+            elif sys.platform == "darwin":
+                binary_name = "libsimpleservo.dylib"
+            else:
+                binary_name = "libsimpleservo.so"
+
+        if simpleservo2:
+            if sys.platform == "win32":
+                binary_name = "simpleservo2.dll"
+            elif sys.platform == "darwin":
+                binary_name = "libsimpleservo2.dylib"
+            else:
+                binary_name = "libsimpleservo2.so"
 
         release_path = path.join(base_path, "release", binary_name)
         dev_path = path.join(base_path, "debug", binary_name)
@@ -810,6 +823,12 @@ install them, let us know by filing a bug!")
                 help='Build the libsimpleservo library instead of the servo executable',
             ),
             CommandArgument(
+                '--libsimpleservo2',
+                default=None,
+                action='store_true',
+                help='Build the libsimpleservo2 library instead of the servo executable',
+            ),
+            CommandArgument(
                 '--features',
                 default=None,
                 help='Space-separated list of features to also build',
@@ -874,9 +893,9 @@ install them, let us know by filing a bug!")
         self, command, cargo_args,
         env=None, verbose=False,
         target=None, android=False, magicleap=False, libsimpleservo=False,
-        features=None, debug_mozjs=False, with_debug_assertions=False,
-        with_frame_pointer=False, without_wgl=False,
-        with_layout_2020=False, with_layout_2013=False,
+        libsimpleservo2=False, features=None, debug_mozjs=False,
+        with_debug_assertions=False, with_frame_pointer=False,
+        without_wgl=False, with_layout_2020=False, with_layout_2013=False,
         uwp=False, media_stack=None,
     ):
         env = env or self.build_env()
@@ -890,6 +909,8 @@ install them, let us know by filing a bug!")
                 else:
                     api = "capi"
                 port = path.join("libsimpleservo", api)
+            elif libsimpleservo2:
+                port = path.join("libsimpleservo2", "capi")
             else:
                 port = "winit"
             args += [
