@@ -57,8 +57,40 @@ pub mod egl {
 
 #[cfg(target_os = "windows")]
 pub mod gl {
+    use servo::gl::GlFns;
+    use std::ffi::CString;
+    use std::os::raw::c_void;
+    use winapi::shared::minwindef::HMODULE;
+    use winapi::shared::ntdef::LPCSTR;
+    use winapi::um::libloaderapi;
+    use winapi::um::wingdi::wglGetProcAddress;
+
+    thread_local! {
+        static OPENGL_LIBRARY: HMODULE = {
+            unsafe {
+                libloaderapi::LoadLibraryA(&b"opengl32.dll\0"[0] as *const u8 as LPCSTR)
+            }
+        };
+    }
+
     pub fn init() -> Result<crate::gl_glue::ServoGl, &'static str> {
-        unimplemented!();
+        info!("Loading OpenGL...");
+        let gl = unsafe {
+            GlFns::load_with(|addr| {
+                // https://www.khronos.org/opengl/wiki/Load_OpenGL_Functions#Windows
+                let symbol_name: CString = CString::new(addr.as_bytes()).unwrap();
+                let symbol_ptr = symbol_name.as_ptr() as *const u8 as LPCSTR;
+                let addr = wglGetProcAddress(symbol_ptr) as *const c_void;
+                if !addr.is_null() {
+                    return addr;
+                }
+                OPENGL_LIBRARY.with(|opengl_library| {
+                    libloaderapi::GetProcAddress(*opengl_library, symbol_ptr) as *const c_void
+                })
+            })
+        };
+        info!("OpenGL loaded");
+        Ok(gl)
     }
 }
 
