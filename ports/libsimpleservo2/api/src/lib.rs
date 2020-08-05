@@ -262,8 +262,8 @@ pub fn init(
     gl.clear_color(1.0, 1.0, 1.0, 1.0);
     gl.clear(gl::COLOR_BUFFER_BIT);
     gl.finish();
-    //let v = gl.get_string(gl::VERSION);
-    //error!("gl_version {}", v);
+    let v = gl.get_string(gl::VERSION);
+    error!("gl_version {}", v);
 
     // These need to be on the destination context.
     let draw_fbo = gl.gen_framebuffers(1)[0];
@@ -274,12 +274,21 @@ pub fn init(
     // GL context, but we need a connection that is based on the current GL context,
     // so we work backwards from the current native context via a NativeConnection, and
     // from that back to a Connection, and from that to a Context.
-    use surfman::connection::Connection as ConnectionAPI;
-    type NativeConnection = <Connection as ConnectionAPI>::NativeConnection;
-    let native_connection =
-        NativeConnection::current().expect("Failed to bootstrap native connection");
-    let connection = unsafe { Connection::from_native_connection(native_connection) }
-        .expect("Failed to bootstrap surfman connection");
+    let connection;
+    #[cfg(not(target_os = "windows"))]
+    {
+        use surfman::connection::Connection as ConnectionAPI;
+        type NativeConnection = <Connection as ConnectionAPI>::NativeConnection;
+        let native_connection =
+            NativeConnection::current().expect("Failed to bootstrap native connection");
+        connection = unsafe { Connection::from_native_connection(native_connection) }
+            .expect("Failed to bootstrap surfman connection");
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        connection = Connection::new().expect("Failed to create connection");
+    }
 
     let adapter = connection
         .create_adapter()

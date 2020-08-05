@@ -463,8 +463,8 @@ pub extern "C" fn init_with_egl(
             init(
                 opts,
                 gl.gl_wrapper,
-                Some(gl.gl_context),
-                Some(gl.display),
+                //Some(gl.gl_context),
+                //Some(gl.display),
                 wakeup,
                 callbacks,
             )
