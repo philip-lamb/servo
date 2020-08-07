@@ -31,6 +31,13 @@ use std::slice;
 use std::str::FromStr;
 use std::sync::{Mutex, RwLock};
 
+#[cfg(target_os = "windows")]
+#[no_mangle]
+pub static mut NvOptimusEnablement: i32 = 1;
+#[cfg(target_os = "windows")]
+#[no_mangle]
+pub static mut AmdPowerXpressRequestHighPerformance: i32 = 1;
+
 extern "C" fn default_panic_handler(msg: *const c_char) {
     let c_str: &CStr = unsafe { CStr::from_ptr(msg) };
     error!("{}", c_str.to_str().unwrap());

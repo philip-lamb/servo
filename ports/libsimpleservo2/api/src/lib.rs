@@ -303,11 +303,16 @@ pub fn init(
         type NativeContext = <Device as DeviceAPI>::NativeContext;
         NativeContext::current().expect("Failed to bootstrap native context")
     };
-    let context = unsafe {
-        device
-            .create_context_from_native_context(native_context)
-            .expect("Failed to bootstrap surfman context")
-    };
+
+    let context;
+    #[cfg(not(target_os = "windows"))]
+    {
+        context = unsafe {
+            device
+                .create_context_from_native_context(native_context)
+                .expect("Failed to bootstrap surfman context")
+        };
+    }
 
     let gfx = ServoGfx {
         gl: gl.clone(),
