@@ -708,16 +708,16 @@ impl Node {
         &self,
         other: &Node,
         shadow_including: ShadowIncluding,
-    ) -> DomRoot<Node> {
+    ) -> Option<DomRoot<Node>> {
         for ancestor in self.inclusive_ancestors(shadow_including) {
             if other
                 .inclusive_ancestors(shadow_including)
                 .any(|node| node == ancestor)
             {
-                return ancestor;
+                return Some(ancestor);
             }
         }
-        unreachable!();
+        None
     }
 
     pub fn is_inclusive_ancestor_of(&self, parent: &Node) -> bool {
@@ -932,6 +932,18 @@ impl Node {
         let node = doc.node_from_nodes_and_strings(nodes)?;
         // Step 2.
         self.AppendChild(&node).map(|_| ())
+    }
+
+    // https://dom.spec.whatwg.org/#dom-parentnode-replacechildren
+    pub fn replace_children(&self, nodes: Vec<NodeOrString>) -> ErrorResult {
+        // Step 1.
+        let doc = self.owner_doc();
+        let node = doc.node_from_nodes_and_strings(nodes)?;
+        // Step 2.
+        Node::ensure_pre_insertion_validity(&node, self, None)?;
+        // Step 3.
+        Node::replace_all(Some(&node), self);
+        Ok(())
     }
 
     // https://dom.spec.whatwg.org/#dom-parentnode-queryselector

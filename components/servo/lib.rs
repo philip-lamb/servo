@@ -27,7 +27,6 @@ pub use canvas;
 pub use canvas_traits;
 pub use compositing;
 pub use constellation;
-pub use debugger;
 pub use devtools;
 pub use devtools_traits;
 pub use embedder_traits;
@@ -144,9 +143,8 @@ mod media_platform {
 
     #[cfg(feature = "uwp")]
     fn set_gstreamer_log_handler() {
-        use gstreamer::{debug_add_log_function, debug_remove_default_log_function, DebugLevel};
+        use gstreamer::{debug_add_log_function, DebugLevel};
 
-        debug_remove_default_log_function();
         debug_add_log_function(|cat, level, file, function, line, _, message| {
             let message = format!(
                 "{:?} {:?} {:?}:{:?}:{:?} {:?}",
@@ -355,8 +353,6 @@ where
         );
         let mem_profiler_chan = profile_mem::Profiler::create(opts.mem_profiler_period);
 
-        let debugger_chan = opts.debugger_port.map(|port| debugger::start_server(port));
-
         let devtools_chan = if opts.devtools_server_enabled {
             Some(devtools::start_server(
                 opts.devtools_port,
@@ -501,7 +497,6 @@ where
             compositor_proxy.clone(),
             time_profiler_chan.clone(),
             mem_profiler_chan.clone(),
-            debugger_chan,
             devtools_chan,
             webrender_document,
             webrender_api_sender,
@@ -580,6 +575,13 @@ where
                 let msg = ConstellationMsg::LoadUrl(top_level_browsing_context_id, url);
                 if let Err(e) = self.constellation_chan.send(msg) {
                     warn!("Sending load url to constellation failed ({:?}).", e);
+                }
+            },
+
+            WindowEvent::ClearCache => {
+                let msg = ConstellationMsg::ClearCache;
+                if let Err(e) = self.constellation_chan.send(msg) {
+                    warn!("Sending clear cache to constellation failed ({:?}).", e);
                 }
             },
 
@@ -851,7 +853,6 @@ fn create_constellation(
     compositor_proxy: CompositorProxy,
     time_profiler_chan: time::ProfilerChan,
     mem_profiler_chan: mem::ProfilerChan,
-    debugger_chan: Option<debugger::Sender>,
     devtools_chan: Option<Sender<devtools_traits::DevtoolsControlMsg>>,
     webrender_document: webrender_api::DocumentId,
     webrender_api_sender: webrender_api::RenderApiSender,
@@ -893,7 +894,6 @@ fn create_constellation(
     let initial_state = InitialConstellationState {
         compositor_proxy,
         embedder_proxy,
-        debugger_chan,
         devtools_chan,
         bluetooth_thread,
         font_cache_thread,
@@ -1092,27 +1092,27 @@ enum UserAgent {
 fn default_user_agent_string_for(agent: UserAgent) -> &'static str {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     const DESKTOP_UA_STRING: &'static str =
-        "Mozilla/5.0 (X11; Linux x86_64; rv:75.0) Servo/1.0 Firefox/75.0";
+        "Mozilla/5.0 (X11; Linux x86_64; rv:78.0) Servo/1.0 Firefox/78.0";
     #[cfg(all(target_os = "linux", not(target_arch = "x86_64")))]
     const DESKTOP_UA_STRING: &'static str =
-        "Mozilla/5.0 (X11; Linux i686; rv:75.0) Servo/1.0 Firefox/75.0";
+        "Mozilla/5.0 (X11; Linux i686; rv:78.0) Servo/1.0 Firefox/78.0";
 
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     const DESKTOP_UA_STRING: &'static str =
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:75.0) Servo/1.0 Firefox/75.0";
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:78.0) Servo/1.0 Firefox/78.0";
     #[cfg(all(target_os = "windows", not(target_arch = "x86_64")))]
     const DESKTOP_UA_STRING: &'static str =
-        "Mozilla/5.0 (Windows NT 10.0; rv:75.0) Servo/1.0 Firefox/75.0";
+        "Mozilla/5.0 (Windows NT 10.0; rv:78.0) Servo/1.0 Firefox/78.0";
 
     #[cfg(target_os = "macos")]
     const DESKTOP_UA_STRING: &'static str =
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:75.0) Servo/1.0 Firefox/75.0";
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:78.0) Servo/1.0 Firefox/78.0";
 
     match agent {
         UserAgent::Desktop => DESKTOP_UA_STRING,
         UserAgent::Android => "Mozilla/5.0 (Android; Mobile; rv:68.0) Servo/1.0 Firefox/68.0",
         UserAgent::iOS => {
-            "Mozilla/5.0 (iPhone; CPU iPhone OS 13_4 like Mac OS X; rv:75.0) Servo/1.0 Firefox/75.0"
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 13_6 like Mac OS X; rv:78.0) Servo/1.0 Firefox/78.0"
         },
     }
 }

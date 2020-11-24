@@ -7,40 +7,35 @@
 // these tests the browser must be run with these options:
 //
 //   --enable-blink-features=MojoJS,MojoJSTest
-let loadChromiumResources = Promise.resolve().then(() => {
-  if (!window.MojoInterfaceInterceptor) {
-    // Do nothing on non-Chromium-based browsers or when the Mojo bindings are
-    // not present in the global namespace.
-    return;
-  }
 
-  let chain = Promise.resolve();
-  [
-    '/gen/layout_test_data/mojo/public/js/mojo_bindings.js',
-    '/gen/services/device/public/mojom/nfc.mojom.js',
-    '/resources/testdriver.js',
-    '/resources/testdriver-vendor.js',
-    '/resources/chromium/nfc-mock.js',
-  ].forEach(path => {
-    let script = document.createElement('script');
-    script.src = path;
-    script.async = false;
-    chain = chain.then(() => new Promise(resolve => {
-      script.onload = resolve;
-    }));
-    document.head.appendChild(script);
-  });
+async function loadChromiumResources() {
+  const chromiumResources = [
+  '/gen/services/device/public/mojom/nfc.mojom.js',
+  ];
 
-  return chain;
-});
+  await loadMojoResources(chromiumResources);
+  await loadScript('/resources/testdriver.js');
+  await loadScript('/resources/testdriver-vendor.js');
+  await loadScript('/resources/chromium/nfc-mock.js');
+}
 
 async function initialize_nfc_tests() {
   if (typeof WebNFCTest === 'undefined') {
-    await loadChromiumResources;
+    const script = document.createElement('script');
+    script.src = '/resources/test-only-api.js';
+    script.async = false;
+    const p = new Promise((resolve, reject) => {
+      script.onload = () => { resolve(); };
+      script.onerror = e => { reject(e); };
+    })
+    document.head.appendChild(script);
+    await p;
+
+    if (isChromiumBased) {
+      await loadChromiumResources();
+    }
   }
-  assert_true(
-      typeof WebNFCTest !== 'undefined',
-      'WebNFC testing interface is not available.');
+  assert_implements( WebNFCTest, 'WebNFC testing interface is unavailable.');
   let NFCTest = new WebNFCTest();
   await NFCTest.initialize();
   return NFCTest;
@@ -154,10 +149,6 @@ function createUrlRecord(url, isAbsUrl) {
   return createRecord('url', url, test_record_id);
 }
 
-function createNDEFWriteOptions(ignoreRead) {
-  return {ignoreRead};
-}
-
 // Compares NDEFMessageSource that was provided to the API
 // (e.g. NDEFWriter.write), and NDEFMessage that was received by the
 // mock NFC service.
@@ -213,7 +204,7 @@ function testMultiScanOptions(message, scanOptions, unmatchedScanOptions, desc) 
     unmatchedScanOptions.signal = controller.signal;
     await reader1.scan(unmatchedScanOptions);
 
-    const readerWatcher = new EventWatcher(t, reader2, ["reading", "error"]);
+    const readerWatcher = new EventWatcher(t, reader2, ["reading", "readingerror"]);
     const promise = readerWatcher.wait_for("reading").then(event => {
       controller.abort();
       assertWebNDEFMessagesEqual(event.message, new NDEFMessage(message));
@@ -230,7 +221,7 @@ function testMultiMessages(message, scanOptions, unmatchedMessage, desc) {
   nfc_test(async (t, mockNFC) => {
     const reader = new NDEFReader();
     const controller = new AbortController();
-    const readerWatcher = new EventWatcher(t, reader, ["reading", "error"]);
+    const readerWatcher = new EventWatcher(t, reader, ["reading", "readingerror"]);
     const promise = readerWatcher.wait_for("reading").then(event => {
       controller.abort();
       assertWebNDEFMessagesEqual(event.message, new NDEFMessage(message));

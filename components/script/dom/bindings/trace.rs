@@ -77,8 +77,10 @@ use hyper::Method;
 use hyper::StatusCode;
 use indexmap::IndexMap;
 use ipc_channel::ipc::{IpcReceiver, IpcSender};
-use js::glue::{CallObjectTracer, CallStringTracer, CallValueTracer};
-use js::jsapi::{GCTraceKindToAscii, Heap, JSObject, JSString, JSTracer, JobQueue, TraceKind};
+use js::glue::{CallObjectTracer, CallScriptTracer, CallStringTracer, CallValueTracer};
+use js::jsapi::{
+    GCTraceKindToAscii, Heap, JSObject, JSScript, JSString, JSTracer, JobQueue, TraceKind,
+};
 use js::jsval::JSVal;
 use js::rust::{GCMethods, Handle, Runtime};
 use js::typedarray::TypedArray;
@@ -136,6 +138,7 @@ use std::cell::{Cell, RefCell, UnsafeCell};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::hash::{BuildHasher, Hash};
 use std::mem;
+use std::num::NonZeroU64;
 use std::ops::{Deref, DerefMut, Range};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -166,12 +169,11 @@ use tendril::{StrTendril, TendrilSink};
 use time::{Duration, Timespec, Tm};
 use uuid::Uuid;
 use webgpu::{
-    wgpu::command::{ComputePass, RenderPass},
-    wgt::BindGroupLayoutEntry,
+    wgpu::command::{ComputePass, RenderBundleEncoder, RenderPass},
     WebGPU, WebGPUAdapter, WebGPUBindGroup, WebGPUBindGroupLayout, WebGPUBuffer,
     WebGPUCommandBuffer, WebGPUCommandEncoder, WebGPUComputePipeline, WebGPUDevice,
-    WebGPUPipelineLayout, WebGPUQueue, WebGPURenderPipeline, WebGPUSampler, WebGPUShaderModule,
-    WebGPUTexture, WebGPUTextureView,
+    WebGPUPipelineLayout, WebGPUQueue, WebGPURenderBundle, WebGPURenderPipeline, WebGPUSampler,
+    WebGPUShaderModule, WebGPUTexture, WebGPUTextureView,
 };
 use webrender_api::{DocumentId, ExternalImageId, ImageKey};
 use webxr_api::{Finger, Hand, Ray, View};
@@ -218,6 +220,18 @@ unsafe_no_jsmanaged_fields!(*mut JobQueue);
 unsafe_no_jsmanaged_fields!(Cow<'static, str>);
 
 unsafe_no_jsmanaged_fields!(CspList);
+
+/// Trace a `JSScript`.
+pub fn trace_script(tracer: *mut JSTracer, description: &str, script: &Heap<*mut JSScript>) {
+    unsafe {
+        trace!("tracing {}", description);
+        CallScriptTracer(
+            tracer,
+            script.ptr.get() as *mut _,
+            GCTraceKindToAscii(TraceKind::Script),
+        );
+    }
+}
 
 /// Trace a `JSVal`.
 pub fn trace_jsval(tracer: *mut JSTracer, description: &str, val: &Heap<JSVal>) {
@@ -325,6 +339,15 @@ unsafe impl<T: JSTraceable> JSTraceable for DomRefCell<T> {
 unsafe impl<T: JSTraceable> JSTraceable for RefCell<T> {
     unsafe fn trace(&self, trc: *mut JSTracer) {
         (*self).borrow().trace(trc)
+    }
+}
+
+unsafe impl JSTraceable for Heap<*mut JSScript> {
+    unsafe fn trace(&self, trc: *mut JSTracer) {
+        if self.get().is_null() {
+            return;
+        }
+        trace_script(trc, "heap script", self);
     }
 }
 
@@ -502,6 +525,7 @@ unsafe_no_jsmanaged_fields!(ActiveUniformBlockInfo);
 unsafe_no_jsmanaged_fields!(bool, f32, f64, String, AtomicBool, AtomicUsize, Uuid, char);
 unsafe_no_jsmanaged_fields!(usize, u8, u16, u32, u64);
 unsafe_no_jsmanaged_fields!(isize, i8, i16, i32, i64);
+unsafe_no_jsmanaged_fields!(NonZeroU64);
 unsafe_no_jsmanaged_fields!(Error);
 unsafe_no_jsmanaged_fields!(ServoUrl, ImmutableOrigin, MutableOrigin);
 unsafe_no_jsmanaged_fields!(Image, ImageMetadata, dyn ImageCache, PendingImageId);
@@ -595,6 +619,7 @@ unsafe_no_jsmanaged_fields!(WebGPUBindGroup);
 unsafe_no_jsmanaged_fields!(WebGPUBindGroupLayout);
 unsafe_no_jsmanaged_fields!(WebGPUComputePipeline);
 unsafe_no_jsmanaged_fields!(WebGPURenderPipeline);
+unsafe_no_jsmanaged_fields!(WebGPURenderBundle);
 unsafe_no_jsmanaged_fields!(WebGPUPipelineLayout);
 unsafe_no_jsmanaged_fields!(WebGPUQueue);
 unsafe_no_jsmanaged_fields!(WebGPUShaderModule);
@@ -605,8 +630,8 @@ unsafe_no_jsmanaged_fields!(WebGPUContextId);
 unsafe_no_jsmanaged_fields!(WebGPUCommandBuffer);
 unsafe_no_jsmanaged_fields!(WebGPUCommandEncoder);
 unsafe_no_jsmanaged_fields!(WebGPUDevice);
-unsafe_no_jsmanaged_fields!(BindGroupLayoutEntry);
 unsafe_no_jsmanaged_fields!(Option<RenderPass>);
+unsafe_no_jsmanaged_fields!(Option<RenderBundleEncoder>);
 unsafe_no_jsmanaged_fields!(Option<ComputePass>);
 unsafe_no_jsmanaged_fields!(GPUBufferState);
 unsafe_no_jsmanaged_fields!(GPUCommandEncoderState);

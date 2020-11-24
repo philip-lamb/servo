@@ -21,10 +21,15 @@ pub struct GPUSampler {
 }
 
 impl GPUSampler {
-    fn new_inherited(device: WebGPUDevice, compare_enable: bool, sampler: WebGPUSampler) -> Self {
+    fn new_inherited(
+        device: WebGPUDevice,
+        compare_enable: bool,
+        sampler: WebGPUSampler,
+        label: Option<USVString>,
+    ) -> Self {
         Self {
             reflector_: Reflector::new(),
-            label: DomRefCell::new(None),
+            label: DomRefCell::new(label),
             device,
             sampler,
             compare_enable,
@@ -36,9 +41,15 @@ impl GPUSampler {
         device: WebGPUDevice,
         compare_enable: bool,
         sampler: WebGPUSampler,
+        label: Option<USVString>,
     ) -> DomRoot<Self> {
         reflect_dom_object(
-            Box::new(GPUSampler::new_inherited(device, compare_enable, sampler)),
+            Box::new(GPUSampler::new_inherited(
+                device,
+                compare_enable,
+                sampler,
+                label,
+            )),
             global,
         )
     }

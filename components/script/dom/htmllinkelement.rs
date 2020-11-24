@@ -30,6 +30,7 @@ use embedder_traits::EmbedderMsg;
 use html5ever::{LocalName, Prefix};
 use net_traits::ReferrerPolicy;
 use servo_arc::Arc;
+use servo_atoms::Atom;
 use std::borrow::ToOwned;
 use std::cell::Cell;
 use std::default::Default;
@@ -115,7 +116,7 @@ impl HTMLLinkElement {
             stylesheets_owner.remove_stylesheet(self.upcast(), s)
         }
         *self.stylesheet.borrow_mut() = Some(s.clone());
-        self.cssom_stylesheet.set(None);
+        self.clean_stylesheet_ownership();
         stylesheets_owner.add_stylesheet(self.upcast(), s);
     }
 
@@ -146,6 +147,13 @@ impl HTMLLinkElement {
                 .any(|s| s.eq_ignore_ascii_case("alternate")),
             None => false,
         }
+    }
+
+    fn clean_stylesheet_ownership(&self) {
+        if let Some(cssom_stylesheet) = self.cssom_stylesheet.get() {
+            cssom_stylesheet.set_owner(None);
+        }
+        self.cssom_stylesheet.set(None);
     }
 }
 
@@ -254,6 +262,7 @@ impl VirtualMethods for HTMLLinkElement {
         }
 
         if let Some(s) = self.stylesheet.borrow_mut().take() {
+            self.clean_stylesheet_ownership();
             stylesheets_owner_from_node(self).remove_stylesheet(self.upcast(), &s);
         }
     }
@@ -428,8 +437,29 @@ impl HTMLLinkElementMethods for HTMLLinkElement {
 
     // https://html.spec.whatwg.org/multipage/#dom-link-rellist
     fn RelList(&self) -> DomRoot<DOMTokenList> {
-        self.rel_list
-            .or_init(|| DOMTokenList::new(self.upcast(), &local_name!("rel")))
+        self.rel_list.or_init(|| {
+            DOMTokenList::new(
+                self.upcast(),
+                &local_name!("rel"),
+                Some(vec![
+                    Atom::from("alternate"),
+                    Atom::from("apple-touch-icon"),
+                    Atom::from("apple-touch-icon-precomposed"),
+                    Atom::from("canonical"),
+                    Atom::from("dns-prefetch"),
+                    Atom::from("icon"),
+                    Atom::from("import"),
+                    Atom::from("manifest"),
+                    Atom::from("modulepreload"),
+                    Atom::from("next"),
+                    Atom::from("preconnect"),
+                    Atom::from("prefetch"),
+                    Atom::from("preload"),
+                    Atom::from("prerender"),
+                    Atom::from("stylesheet"),
+                ]),
+            )
+        })
     }
 
     // https://html.spec.whatwg.org/multipage/#dom-link-charset

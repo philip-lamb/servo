@@ -20,6 +20,8 @@ use rayon_croissant::ParallelIteratorExt;
 use servo_arc::Arc;
 use std::borrow::Cow;
 use std::convert::{TryFrom, TryInto};
+use style::computed_values::white_space::T as WhiteSpace;
+use style::properties::longhands::list_style_position::computed_value::T as ListStylePosition;
 use style::properties::ComputedValues;
 use style::selector_parser::PseudoElement;
 use style::values::specified::text::TextDecorationLine;
@@ -30,12 +32,18 @@ impl BlockFormattingContext {
         info: &NodeAndStyleInfo<Node>,
         contents: NonReplacedContents,
         propagated_text_decoration_line: TextDecorationLine,
+        is_list_item: bool,
     ) -> Self
     where
         Node: NodeExt<'dom>,
     {
-        let (contents, contains_floats) =
-            BlockContainer::construct(context, info, contents, propagated_text_decoration_line);
+        let (contents, contains_floats) = BlockContainer::construct(
+            context,
+            info,
+            contents,
+            propagated_text_decoration_line,
+            is_list_item,
+        );
         let bfc = Self {
             contents,
             contains_floats: contains_floats == ContainsFloats::Yes,
@@ -97,7 +105,11 @@ enum BlockLevelCreator {
 /// Deferring allows using rayon’s `into_par_iter`.
 enum IntermediateBlockContainer {
     InlineFormattingContext(InlineFormattingContext),
-    Deferred(NonReplacedContents, TextDecorationLine),
+    Deferred {
+        contents: NonReplacedContents,
+        propagated_text_decoration_line: TextDecorationLine,
+        is_list_item: bool,
+    },
 }
 
 /// A builder for a block container.
@@ -164,6 +176,7 @@ impl BlockContainer {
         info: &NodeAndStyleInfo<Node>,
         contents: NonReplacedContents,
         propagated_text_decoration_line: TextDecorationLine,
+        is_list_item: bool,
     ) -> (BlockContainer, ContainsFloats)
     where
         Node: NodeExt<'dom>,
@@ -179,6 +192,24 @@ impl BlockContainer {
             anonymous_style: None,
             contains_floats: ContainsFloats::No,
         };
+
+        if is_list_item {
+            if let Some(marker_contents) = crate::lists::make_marker(context, info) {
+                let _position = info.style.clone_list_style_position();
+                // FIXME: implement support for `outside` and remove this:
+                let position = ListStylePosition::Inside;
+                match position {
+                    ListStylePosition::Inside => {
+                        builder.handle_list_item_marker_inside(info, marker_contents)
+                    },
+                    ListStylePosition::Outside => {
+                        // FIXME: implement layout for this case
+                        // https://github.com/servo/servo/issues/27383
+                        // and enable `list-style-position` and the `list-style` shorthand in Stylo.
+                    },
+                }
+            }
+        }
 
         contents.traverse(context, info, &mut builder);
 
@@ -263,60 +294,96 @@ where
     }
 
     fn handle_text(&mut self, info: &NodeAndStyleInfo<Node>, input: Cow<'dom, str>) {
-        let (leading_whitespace, mut input) = self.handle_leading_whitespace(&input);
-        if leading_whitespace || !input.is_empty() {
-            // This text node should be pushed either to the next ongoing
-            // inline level box with the parent style of that inline level box
-            // that will be ended, or directly to the ongoing inline formatting
-            // context with the parent style of that builder.
-            let inlines = self.current_inline_level_boxes();
+        // Skip any leading whitespace as dictated by the node's style.
+        let white_space = info.style.get_inherited_text().white_space;
+        let (preserved_leading_whitespace, mut input) =
+            self.handle_leading_whitespace(&input, white_space);
 
-            let mut new_text_run_contents;
-            let output;
+        if !preserved_leading_whitespace && input.is_empty() {
+            return;
+        }
 
-            {
-                let mut last_box = inlines.last_mut().map(|last| last.borrow_mut());
-                let last_text = last_box.as_mut().and_then(|last| match &mut **last {
-                    InlineLevelBox::TextRun(last) => Some(&mut last.text),
-                    _ => None,
-                });
+        // This text node should be pushed either to the next ongoing
+        // inline level box with the parent style of that inline level box
+        // that will be ended, or directly to the ongoing inline formatting
+        // context with the parent style of that builder.
+        let inlines = self.current_inline_level_boxes();
 
-                if let Some(text) = last_text {
-                    // Append to the existing text run
-                    new_text_run_contents = None;
-                    output = text;
-                } else {
-                    new_text_run_contents = Some(String::new());
-                    output = new_text_run_contents.as_mut().unwrap();
-                }
+        let mut new_text_run_contents;
+        let output;
 
-                if leading_whitespace {
-                    output.push(' ')
-                }
-                loop {
-                    if let Some(i) = input.bytes().position(|b| b.is_ascii_whitespace()) {
+        {
+            let mut last_box = inlines.last_mut().map(|last| last.borrow_mut());
+            let last_text = last_box.as_mut().and_then(|last| match &mut **last {
+                InlineLevelBox::TextRun(last) => Some(&mut last.text),
+                _ => None,
+            });
+
+            if let Some(text) = last_text {
+                // Append to the existing text run
+                new_text_run_contents = None;
+                output = text;
+            } else {
+                new_text_run_contents = Some(String::new());
+                output = new_text_run_contents.as_mut().unwrap();
+            }
+
+            if preserved_leading_whitespace {
+                output.push(' ')
+            }
+
+            match (
+                white_space.preserve_spaces(),
+                white_space.preserve_newlines(),
+            ) {
+                // All whitespace is significant, so we don't need to transform
+                // the input at all.
+                (true, true) => {
+                    output.push_str(input);
+                },
+
+                // There are no cases in CSS where where need to preserve spaces
+                // but not newlines.
+                (true, false) => unreachable!(),
+
+                // Spaces are not significant, but newlines might be. We need
+                // to collapse non-significant whitespace as appropriate.
+                (false, preserve_newlines) => loop {
+                    // If there are any spaces that need preserving, split the string
+                    // that precedes them, collapse them into a single whitespace,
+                    // then process the remainder of the string independently.
+                    if let Some(i) = input
+                        .bytes()
+                        .position(|b| b.is_ascii_whitespace() && (!preserve_newlines || b != b'\n'))
+                    {
                         let (non_whitespace, rest) = input.split_at(i);
                         output.push_str(non_whitespace);
                         output.push(' ');
-                        if let Some(i) = rest.bytes().position(|b| !b.is_ascii_whitespace()) {
+
+                        // Find the first byte that is either significant whitespace or
+                        // non-whitespace to continue processing it.
+                        if let Some(i) = rest.bytes().position(|b| {
+                            !b.is_ascii_whitespace() || (preserve_newlines && b == b'\n')
+                        }) {
                             input = &rest[i..];
                         } else {
                             break;
                         }
                     } else {
+                        // No whitespace found, so no transformation is required.
                         output.push_str(input);
                         break;
                     }
-                }
+                },
             }
+        }
 
-            if let Some(text) = new_text_run_contents {
-                inlines.push(ArcRefCell::new(InlineLevelBox::TextRun(TextRun {
-                    tag: Tag::from_node_and_style_info(info),
-                    parent_style: Arc::clone(&info.style),
-                    text,
-                })))
-            }
+        if let Some(text) = new_text_run_contents {
+            inlines.push(ArcRefCell::new(InlineLevelBox::TextRun(TextRun {
+                tag: Tag::from_node_and_style_info(info),
+                parent_style: Arc::clone(&info.style),
+                text,
+            })))
         }
     }
 }
@@ -329,10 +396,14 @@ where
     ///
     /// * Whether this text run has preserved (non-collapsible) leading whitespace
     /// * The contents starting at the first non-whitespace character (or the empty string)
-    fn handle_leading_whitespace<'text>(&mut self, text: &'text str) -> (bool, &'text str) {
+    fn handle_leading_whitespace<'text>(
+        &mut self,
+        text: &'text str,
+        white_space: WhiteSpace,
+    ) -> (bool, &'text str) {
         // FIXME: this is only an approximation of
         // https://drafts.csswg.org/css2/text.html#white-space-model
-        if !text.starts_with(|c: char| c.is_ascii_whitespace()) {
+        if !text.starts_with(|c: char| c.is_ascii_whitespace()) || white_space.preserve_spaces() {
             return (false, text);
         }
 
@@ -384,13 +455,38 @@ where
         }
     }
 
+    fn handle_list_item_marker_inside(
+        &mut self,
+        info: &NodeAndStyleInfo<Node>,
+        contents: Vec<crate::dom_traversal::PseudoElementContentItem>,
+    ) {
+        let marker_style = self
+            .context
+            .shared_context()
+            .stylist
+            .style_for_anonymous::<Node::ConcreteElement>(
+                &self.context.shared_context().guards,
+                &PseudoElement::ServoText, // FIMXE: use `PseudoElement::Marker` when we add it
+                &info.style,
+            );
+        self.handle_inline_level_element(
+            &info.new_replacing_style(marker_style),
+            DisplayInside::Flow {
+                is_list_item: false,
+            },
+            Contents::OfPseudoElement(contents),
+        );
+    }
+
     fn handle_inline_level_element(
         &mut self,
         info: &NodeAndStyleInfo<Node>,
         display_inside: DisplayInside,
         contents: Contents,
     ) -> ArcRefCell<InlineLevelBox> {
-        let box_ = if display_inside == DisplayInside::Flow && !contents.is_replaced() {
+        let box_ = if let (DisplayInside::Flow { is_list_item }, false) =
+            (display_inside, contents.is_replaced())
+        {
             // We found un inline box.
             // Whatever happened before, all we need to do before recurring
             // is to remember this ongoing inline level box.
@@ -401,6 +497,15 @@ where
                 last_fragment: false,
                 children: vec![],
             });
+
+            if is_list_item {
+                if let Some(marker_contents) = crate::lists::make_marker(self.context, info) {
+                    // Ignore `list-style-position` here:
+                    // “If the list item is an inline box: this value is equivalent to `inside`.”
+                    // https://drafts.csswg.org/css-lists/#list-style-position-outside
+                    self.handle_list_item_marker_inside(info, marker_contents)
+                }
+            }
 
             // `unwrap` doesn’t panic here because `is_replaced` returned `false`.
             NonReplacedContents::try_from(contents)
@@ -485,9 +590,15 @@ where
 
         let kind = match contents.try_into() {
             Ok(contents) => match display_inside {
-                DisplayInside::Flow => BlockLevelCreator::SameFormattingContextBlock(
-                    IntermediateBlockContainer::Deferred(contents, propagated_text_decoration_line),
-                ),
+                DisplayInside::Flow { is_list_item } => {
+                    BlockLevelCreator::SameFormattingContextBlock(
+                        IntermediateBlockContainer::Deferred {
+                            contents,
+                            propagated_text_decoration_line,
+                            is_list_item,
+                        },
+                    )
+                },
                 _ => BlockLevelCreator::Independent {
                     display_inside,
                     contents: contents.into(),
@@ -695,9 +806,17 @@ impl IntermediateBlockContainer {
         Node: NodeExt<'dom>,
     {
         match self {
-            IntermediateBlockContainer::Deferred(contents, propagated_text_decoration_line) => {
-                BlockContainer::construct(context, info, contents, propagated_text_decoration_line)
-            },
+            IntermediateBlockContainer::Deferred {
+                contents,
+                propagated_text_decoration_line,
+                is_list_item,
+            } => BlockContainer::construct(
+                context,
+                info,
+                contents,
+                propagated_text_decoration_line,
+                is_list_item,
+            ),
             IntermediateBlockContainer::InlineFormattingContext(ifc) => {
                 // If that inline formatting context contained any float, those
                 // were already taken into account during the first phase of

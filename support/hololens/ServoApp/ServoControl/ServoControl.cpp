@@ -407,7 +407,7 @@ void ServoControl::Loop() {
     ServoDelegate *sd = static_cast<ServoDelegate *>(this);
     EGLNativeWindowType win = GetNativeWindow();
     mServo = std::make_unique<Servo>(mInitUrl, mArgs, mPanelWidth, mPanelHeight,
-                                     win, mDPI, *sd);
+                                     win, mDPI, *sd, mTransient);
   } else {
     // FIXME: this will fail since create_task didn't pick the thread
     // where Servo was running initially.
@@ -418,34 +418,48 @@ void ServoControl::Loop() {
 
   while (true) {
     EnterCriticalSection(&mGLLock);
-    while (mTasks.size() == 0 && !mAnimating && mLooping) {
-      SleepConditionVariableCS(&mGLCondVar, &mGLLock, INFINITE);
-    }
-    if (!mLooping) {
+    try {
+      while (mTasks.size() == 0 && !mAnimating && mLooping) {
+        SleepConditionVariableCS(&mGLCondVar, &mGLLock, INFINITE);
+      }
+      if (!mLooping) {
+        LeaveCriticalSection(&mGLLock);
+        break;
+      }
+      for (auto &&task : mTasks) {
+        task();
+      }
+      mTasks.clear();
       LeaveCriticalSection(&mGLLock);
-      break;
+      mServo->PerformUpdates();
+    } catch (hresult_error const &e) {
+      log(L"GL Thread exception: %s", e.message().c_str());
+      throw e;
+    } catch (...) {
+      log(L"GL Thread exception");
+      throw winrt::hresult_error(E_FAIL, L"GL Thread exception");
     }
-    for (auto &&task : mTasks) {
-      task();
-    }
-    mTasks.clear();
-    LeaveCriticalSection(&mGLLock);
-    mServo->PerformUpdates();
   }
   mServo->DeInit();
 }
 
 void ServoControl::StartRenderLoop() {
   if (mLooping) {
-#if defined _DEBUG
     throw winrt::hresult_error(E_FAIL, L"GL thread is already looping");
-#else
-    return;
-#endif
   }
   mLooping = true;
   log(L"BrowserPage::StartRenderLoop(). UI thread: %i", GetCurrentThreadId());
-  auto task = Concurrency::create_task([=] { Loop(); });
+  auto task = Concurrency::create_task([=] {
+    try {
+      Loop();
+    } catch (...) {
+      // Do our best to recover. Exception has been logged at that point.
+      mLooping = false;
+      mLoopTask.reset();
+      mServo.reset();
+      LeaveCriticalSection(&mGLLock);
+    }
+  });
   mLoopTask = std::make_unique<Concurrency::task<void>>(task);
 }
 
@@ -502,6 +516,10 @@ bool ServoControl::OnServoAllowNavigation(hstring uri) {
   return !mTransient;
 }
 
+void ServoControl::OnServoPanic(hstring backtrace) {
+  RunOnUIThread([=] { mOnServoPanic(*this, backtrace); });
+}
+
 void ServoControl::OnServoAnimatingChanged(bool animating) {
   EnterCriticalSection(&mGLLock);
   mAnimating = animating;
@@ -528,6 +546,12 @@ void ServoControl::OnServoIMEShow(hstring text, int32_t x, int32_t y,
     mFocusedInputText = text;
     mInputPane->TryShow();
   });
+}
+
+void ServoControl::OnServoMediaSessionPosition(double duration, double position,
+                                               double playback_rate) {
+  RunOnUIThread(
+      [=] { mOnMediaSessionPositionEvent(duration, position, playback_rate); });
 }
 
 void ServoControl::OnServoMediaSessionMetadata(hstring title, hstring artist,

@@ -63,8 +63,16 @@ pub struct InitOptions {
     pub xr_discovery: Option<webxr::Discovery>,
     pub gl_context_pointer: Option<*const c_void>,
     pub native_display_pointer: Option<*const c_void>,
-    pub native_widget: *mut c_void,
+    pub surfman_integration: SurfmanIntegration,
     pub prefs: Option<HashMap<String, PrefValue>>,
+}
+
+/// Controls how this embedding's rendering will integrate with the embedder.
+pub enum SurfmanIntegration {
+    /// Render directly to a provided native widget (see surfman::NativeWidget).
+    Widget(*mut c_void),
+    /// Render to an offscreen surface.
+    Surface,
 }
 
 #[derive(Clone, Debug)]
@@ -112,7 +120,7 @@ pub trait HostTrait {
     /// Throbber stops spinning.
     fn on_load_ended(&self);
     /// Page title has changed.
-    fn on_title_changed(&self, title: String);
+    fn on_title_changed(&self, title: Option<String>);
     /// Allow Navigation.
     fn on_allow_navigation(&self, url: String) -> bool;
     /// Page URL has changed.
@@ -148,9 +156,12 @@ pub trait HostTrait {
     fn on_media_session_set_position_state(&self, duration: f64, position: f64, playback_rate: f64);
     /// Called when devtools server is started
     fn on_devtools_started(&self, port: Result<u16, ()>, token: String);
+    /// Called when we get a panic message from constellation
+    fn on_panic(&self, reason: String, backtrace: Option<String>);
 }
 
 pub struct ServoGlue {
+    webrender_surfman: WebrenderSurfman,
     servo: Servo<ServoWindowCallbacks>,
     batch_mode: bool,
     callbacks: Rc<ServoWindowCallbacks>,
@@ -251,13 +262,21 @@ pub fn init(
             .create_adapter()
             .or(Err("Failed to create adapter"))?,
     };
-    let native_widget = unsafe {
-        connection.create_native_widget_from_ptr(
-            init_opts.native_widget,
-            init_opts.coordinates.framebuffer.to_untyped(),
-        )
+    let surface_type = match init_opts.surfman_integration {
+        SurfmanIntegration::Widget(native_widget) => {
+            let native_widget = unsafe {
+                connection.create_native_widget_from_ptr(
+                    native_widget,
+                    init_opts.coordinates.framebuffer.to_untyped(),
+                )
+            };
+            SurfaceType::Widget { native_widget }
+        },
+        SurfmanIntegration::Surface => {
+            let size = init_opts.coordinates.framebuffer.to_untyped();
+            SurfaceType::Generic { size }
+        },
     };
-    let surface_type = SurfaceType::Widget { native_widget };
     let webrender_surfman = WebrenderSurfman::create(&connection, &adapter, surface_type)
         .or(Err("Failed to create surface manager"))?;
 
@@ -267,7 +286,7 @@ pub fn init(
         density: init_opts.density,
         gl_context_pointer: init_opts.gl_context_pointer,
         native_display_pointer: init_opts.native_display_pointer,
-        webrender_surfman,
+        webrender_surfman: webrender_surfman.clone(),
     });
 
     let embedder_callbacks = Box::new(ServoEmbedderCallbacks {
@@ -280,6 +299,7 @@ pub fn init(
 
     SERVO.with(|s| {
         let mut servo_glue = ServoGlue {
+            webrender_surfman,
             servo,
             batch_mode: false,
             callbacks: window_callbacks,
@@ -320,6 +340,12 @@ impl ServoGlue {
         self.servo.deinit();
     }
 
+    /// Returns the webrender surface management integration interface.
+    /// This provides the embedder access to the current front buffer.
+    pub fn surfman(&self) -> WebrenderSurfman {
+        self.webrender_surfman.clone()
+    }
+
     /// This is the Servo heartbeat. This needs to be called
     /// everytime wakeup is called or when embedder wants Servo
     /// to act on its pending events.
@@ -353,6 +379,13 @@ impl ServoGlue {
                 let event = WindowEvent::LoadUrl(browser_id, url);
                 self.process_event(event)
             })
+    }
+
+    /// Reload the page.
+    pub fn clear_cache(&mut self) -> Result<(), &'static str> {
+        info!("clear_cache");
+        let event = WindowEvent::ClearCache;
+        self.process_event(event)
     }
 
     /// Reload the page.
@@ -581,16 +614,6 @@ impl ServoGlue {
         for (browser_id, event) in self.servo.get_events() {
             match event {
                 EmbedderMsg::ChangePageTitle(title) => {
-                    let fallback_title: String = if let Some(ref current_url) = self.current_url {
-                        current_url.to_string()
-                    } else {
-                        String::from("Untitled")
-                    };
-                    let title = match title {
-                        Some(ref title) if title.len() > 0 => &**title,
-                        _ => &fallback_title,
-                    };
-                    let title = format!("{} - Servo", title);
                     self.callbacks.host_callbacks.on_title_changed(title);
                 },
                 EmbedderMsg::AllowNavigationRequest(pipeline_id, url) => {
@@ -757,6 +780,9 @@ impl ServoGlue {
                         .host_callbacks
                         .on_devtools_started(port, token);
                 },
+                EmbedderMsg::Panic(reason, backtrace) => {
+                    self.callbacks.host_callbacks.on_panic(reason, backtrace);
+                },
                 EmbedderMsg::Status(..) |
                 EmbedderMsg::SelectFiles(..) |
                 EmbedderMsg::MoveTo(..) |
@@ -766,7 +792,6 @@ impl ServoGlue {
                 EmbedderMsg::NewFavicon(..) |
                 EmbedderMsg::HeadParsed |
                 EmbedderMsg::SetFullscreenState(..) |
-                EmbedderMsg::Panic(..) |
                 EmbedderMsg::ReportProfile(..) => {},
             }
         }
@@ -843,7 +868,7 @@ impl EmbedderMethods for ServoEmbedderCallbacks {
             }
         }
 
-        if openxr::create_instance(false).is_ok() {
+        if openxr::create_instance(false, false).is_ok() {
             let discovery =
                 openxr::OpenXrDiscovery::new(Box::new(ContextMenuCallback(embedder_proxy)));
             registry.register(discovery);

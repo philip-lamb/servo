@@ -9,8 +9,7 @@ interface GPUAdapter {
     readonly attribute object extensions;
     //readonly attribute GPULimits limits; Don’t expose higher limits for now.
 
-    // May reject with DOMException  // TODO: DOMException("OperationError")?
-    Promise<GPUDevice> requestDevice(optional GPUDeviceDescriptor descriptor = {});
+    Promise<GPUDevice?> requestDevice(optional GPUDeviceDescriptor descriptor = {});
 };
 
 dictionary GPUDeviceDescriptor : GPUObjectDescriptorBase {
@@ -19,8 +18,12 @@ dictionary GPUDeviceDescriptor : GPUObjectDescriptorBase {
 };
 
 enum GPUExtensionName {
+    "depth-clamping",
+    "depth24unorm-stencil8",
+    "depth32float-stencil8",
+    "pipeline-statistics-query",
     "texture-compression-bc",
-    "pipeline-statistics-query"
+    "timestamp-query",
 };
 
 dictionary GPULimits {

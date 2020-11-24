@@ -95,6 +95,7 @@ def linux(context, force=False):
                 'libgl1-mesa-dri', 'libglib2.0-dev', 'xorg-dev', 'gperf', 'g++',
                 'build-essential', 'cmake', 'libssl-dev',
                 'liblzma-dev', 'libxmu6', 'libxmu-dev',
+                "libxcb-render0-dev", "libxcb-shape0-dev", "libxcb-xfixes0-dev",
                 'libgles2-mesa-dev', 'libegl1-mesa-dev', 'libdbus-1-dev',
                 'libharfbuzz-dev', 'ccache', 'clang', 'libunwind-dev',
                 'libgstreamer1.0-dev', 'libgstreamer-plugins-base1.0-dev',
@@ -259,7 +260,7 @@ def windows_msvc(context, force=False):
     '''Bootstrapper for MSVC building on Windows.'''
 
     deps_dir = os.path.join(context.sharedir, "msvc-dependencies")
-    deps_url = "https://servo-deps.s3.amazonaws.com/msvc-deps/"
+    deps_url = "https://servo-deps-2.s3.amazonaws.com/msvc-deps/"
 
     def version(package):
         return packages.WINDOWS_MSVC[package]
@@ -338,7 +339,9 @@ def get_linux_distribution():
         else:
             major = version
 
-        if major == '19':
+        if major == '20':
+            base_version = '20.04'
+        elif major == '19':
             base_version = '18.04'
         elif major == '18':
             base_version = '16.04'

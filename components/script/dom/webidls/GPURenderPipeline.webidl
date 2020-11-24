@@ -7,6 +7,7 @@
 interface GPURenderPipeline {
 };
 GPURenderPipeline includes GPUObjectBase;
+GPURenderPipeline includes GPUPipelineBase;
 
 dictionary GPURenderPipelineDescriptor : GPUPipelineDescriptorBase {
     required GPUProgrammableStageDescriptor vertexStage;
@@ -38,6 +39,8 @@ typedef [EnforceRange] long GPUDepthBias;
 dictionary GPURasterizationStateDescriptor {
     GPUFrontFace frontFace = "ccw";
     GPUCullMode cullMode = "none";
+    // Enable depth clamping (requires "depth-clamping" extension)
+    boolean clampDepth = false;
 
     GPUDepthBias depthBias = 0;
     float depthBiasSlopeScale = 0;

@@ -78,12 +78,16 @@ If `./mach bootstrap` doesn't work, file a bug, and, run the commands below:
 sudo apt install git curl autoconf libx11-dev libfreetype6-dev libgl1-mesa-dri \
     libglib2.0-dev xorg-dev gperf g++ build-essential cmake libssl-dev \
     liblzma-dev libxmu6 libxmu-dev \
+    libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
     libgles2-mesa-dev libegl1-mesa-dev libdbus-1-dev libharfbuzz-dev ccache \
     clang libunwind-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
     libgstreamer-plugins-bad1.0-dev autoconf2.13 llvm-dev
 ```
 
-Additionally, you'll need a local copy of GStreamer with a version later than 12.0. You can place it in `support/linux/gstreamer/gst`, or run `./mach bootstrap-gstreamer` to set it up.
+Additionally, you'll need a local copy of GStreamer with a version later than 16.2. You can place it in `support/linux/gstreamer/gst`, or run `./mach bootstrap-gstreamer` to set it up. On **Ubuntu 20.04LTS**, you can use the system GStreamer if you install the necessary packages:
+``` sh
+sudo apt install gstreamer1.0-nice gstreamer1.0-plugins-bad
+```
 
 If you are using **Ubuntu 16.04** or **Linux Mint 18.&#42;** run `export HARFBUZZ_SYS_NO_PKG_CONFIG=1` before building to avoid an error with harfbuzz.
 

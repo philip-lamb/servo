@@ -281,14 +281,14 @@ def is_unsplittable(file_name, line):
 
 
 def check_whatwg_specific_url(idx, line):
-    match = re.search(br"https://html\.spec\.whatwg\.org/multipage/[\w-]+\.html#([\w\:-]+)", line)
+    match = re.search(br"https://html\.spec\.whatwg\.org/multipage/[\w-]+\.html#([\w\'\:-]+)", line)
     if match is not None:
         preferred_link = "https://html.spec.whatwg.org/multipage/#{}".format(match.group(1))
         yield (idx + 1, "link to WHATWG may break in the future, use this format instead: {}".format(preferred_link))
 
 
 def check_whatwg_single_page_url(idx, line):
-    match = re.search(br"https://html\.spec\.whatwg\.org/#([\w\:-]+)", line)
+    match = re.search(br"https://html\.spec\.whatwg\.org/#([\w\'\:-]+)", line)
     if match is not None:
         preferred_link = "https://html.spec.whatwg.org/multipage/#{}".format(match.group(1))
         yield (idx + 1, "links to WHATWG single-page url, change to multi page: {}".format(preferred_link))
@@ -393,7 +393,8 @@ def check_lock(file_name, contents):
             message += "\n\t\033[93mThe following packages depend on version {} from '{}':\033[0m" \
                        .format(version, short_source)
             for pname, package_version, dependency in packages_dependencies:
-                if version in dependency[1] and (not dependency[2] or short_source in dependency[2]):
+                if (not dependency[1] or version in dependency[1]) and \
+                   (not dependency[2] or short_source in dependency[2]):
                     message += "\n\t\t" + pname + " " + package_version
         yield (1, message)
 
@@ -515,7 +516,7 @@ def check_manifest_dirs(config_file, print_text=True):
     p = parser.parse(lines)
     paths = rec_parse(wpt_path("web-platform-tests"), p)
     for idx, path in enumerate(paths):
-        if '_mozilla' in path or '_webgl' in path:
+        if '_mozilla' in path or '_webgl' in path or '_webgpu' in path:
             continue
         if not os.path.isdir(path):
             yield(config_file, idx + 1, "Path in manifest was not found: {}".format(path))

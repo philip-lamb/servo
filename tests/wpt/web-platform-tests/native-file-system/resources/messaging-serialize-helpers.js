@@ -31,10 +31,10 @@ async function serialize_handle(handle) {
 // FileSystemDirectoryHandle.
 async function serialize_file_system_handle(handle) {
   const read_permission =
-    await handle.queryPermission({ writable: false });
+    await handle.queryPermission({ mode: 'read' });
 
   const write_permission =
-    await handle.queryPermission({ writable: true })
+    await handle.queryPermission({ mode: 'readwrite' })
 
   return {
     kind: handle.kind,
@@ -77,7 +77,7 @@ async function serialize_file_system_directory_handle(directory_handle) {
   // Serialize the contents of the directory.
   const serialized_files = [];
   const serialized_directories = [];
-  for await (const child_handle of directory_handle.getEntries()) {
+  for await (const child_handle of directory_handle.values()) {
     const serialized_child_handle = await serialize_handle(child_handle);
     if (child_handle.kind === "directory") {
       serialized_directories.push(serialized_child_handle);

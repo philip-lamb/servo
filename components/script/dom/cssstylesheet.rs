@@ -6,10 +6,11 @@ use crate::dom::bindings::codegen::Bindings::CSSStyleSheetBinding::CSSStyleSheet
 use crate::dom::bindings::error::{Error, ErrorResult, Fallible};
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::reflector::{reflect_dom_object, DomObject};
-use crate::dom::bindings::root::{Dom, DomRoot, MutNullableDom};
+use crate::dom::bindings::root::{DomRoot, MutNullableDom};
 use crate::dom::bindings::str::DOMString;
 use crate::dom::cssrulelist::{CSSRuleList, RulesSource};
 use crate::dom::element::Element;
+use crate::dom::medialist::MediaList;
 use crate::dom::node::{stylesheets_owner_from_node, Node};
 use crate::dom::stylesheet::StyleSheet;
 use crate::dom::window::Window;
@@ -22,7 +23,7 @@ use style::stylesheets::Stylesheet as StyleStyleSheet;
 #[dom_struct]
 pub struct CSSStyleSheet {
     stylesheet: StyleSheet,
-    owner: Dom<Element>,
+    owner: MutNullableDom<Element>,
     rulelist: MutNullableDom<CSSRuleList>,
     #[ignore_malloc_size_of = "Arc"]
     style_stylesheet: Arc<StyleStyleSheet>,
@@ -39,7 +40,7 @@ impl CSSStyleSheet {
     ) -> CSSStyleSheet {
         CSSStyleSheet {
             stylesheet: StyleSheet::new_inherited(type_, href, title),
-            owner: Dom::from_ref(owner),
+            owner: MutNullableDom::new(Some(owner)),
             rulelist: MutNullableDom::new(None),
             style_stylesheet: stylesheet,
             origin_clean: Cell::new(true),
@@ -63,10 +64,6 @@ impl CSSStyleSheet {
         )
     }
 
-    pub fn owner(&self) -> DomRoot<Element> {
-        DomRoot::from_ref(&*self.owner)
-    }
-
     fn rulelist(&self) -> DomRoot<CSSRuleList> {
         self.rulelist.or_init(|| {
             let rules = self.style_stylesheet.contents.rules.clone();
@@ -78,14 +75,19 @@ impl CSSStyleSheet {
         self.style_stylesheet.disabled()
     }
 
-    pub fn get_owner(&self) -> &Element {
-        &*self.owner
+    pub fn get_owner(&self) -> Option<DomRoot<Element>> {
+        self.owner.get()
     }
 
     pub fn set_disabled(&self, disabled: bool) {
-        if self.style_stylesheet.set_disabled(disabled) {
-            stylesheets_owner_from_node(self.owner().upcast::<Node>()).invalidate_stylesheets();
+        if self.style_stylesheet.set_disabled(disabled) && self.get_owner().is_some() {
+            stylesheets_owner_from_node(self.get_owner().unwrap().upcast::<Node>())
+                .invalidate_stylesheets();
         }
+    }
+
+    pub fn set_owner(&self, value: Option<&Element>) {
+        self.owner.set(value);
     }
 
     pub fn shared_lock(&self) -> &SharedRwLock {
@@ -98,6 +100,14 @@ impl CSSStyleSheet {
 
     pub fn set_origin_clean(&self, origin_clean: bool) {
         self.origin_clean.set(origin_clean);
+    }
+
+    pub fn medialist(&self) -> DomRoot<MediaList> {
+        MediaList::new(
+            self.global().as_window(),
+            self,
+            self.style_stylesheet().media.clone(),
+        )
     }
 }
 

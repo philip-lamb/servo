@@ -13,6 +13,7 @@ use crate::dom::globalscope::GlobalScope;
 use crate::dom::gpubindgroup::GPUBindGroup;
 use crate::dom::gpubuffer::GPUBuffer;
 use crate::dom::gpucommandencoder::{GPUCommandEncoder, GPUCommandEncoderState};
+use crate::dom::gpurenderbundle::GPURenderBundle;
 use crate::dom::gpurenderpipeline::GPURenderPipeline;
 use dom_struct::dom_struct;
 use webgpu::{
@@ -32,12 +33,17 @@ pub struct GPURenderPassEncoder {
 }
 
 impl GPURenderPassEncoder {
-    fn new_inherited(channel: WebGPU, render_pass: RenderPass, parent: &GPUCommandEncoder) -> Self {
+    fn new_inherited(
+        channel: WebGPU,
+        render_pass: Option<RenderPass>,
+        parent: &GPUCommandEncoder,
+        label: Option<USVString>,
+    ) -> Self {
         Self {
             channel,
             reflector_: Reflector::new(),
-            label: DomRefCell::new(None),
-            render_pass: DomRefCell::new(Some(render_pass)),
+            label: DomRefCell::new(label),
+            render_pass: DomRefCell::new(render_pass),
             command_encoder: Dom::from_ref(parent),
         }
     }
@@ -45,14 +51,16 @@ impl GPURenderPassEncoder {
     pub fn new(
         global: &GlobalScope,
         channel: WebGPU,
-        render_pass: RenderPass,
+        render_pass: Option<RenderPass>,
         parent: &GPUCommandEncoder,
+        label: Option<USVString>,
     ) -> DomRoot<Self> {
         reflect_dom_object(
             Box::new(GPURenderPassEncoder::new_inherited(
                 channel,
                 render_pass,
                 parent,
+                label,
             )),
             global,
         )
@@ -118,21 +126,27 @@ impl GPURenderPassEncoderMethods for GPURenderPassEncoder {
 
     /// https://gpuweb.github.io/gpuweb/#dom-gpurenderpassencoder-setblendcolor
     fn SetBlendColor(&self, color: GPUColor) {
-        let colors = match color {
-            GPUColor::GPUColorDict(d) => wgt::Color {
-                r: *d.r,
-                g: *d.g,
-                b: *d.b,
-                a: *d.a,
-            },
-            GPUColor::DoubleSequence(s) => wgt::Color {
-                r: *s[0],
-                g: *s[1],
-                b: *s[2],
-                a: *s[3],
-            },
-        };
         if let Some(render_pass) = self.render_pass.borrow_mut().as_mut() {
+            let colors = match color {
+                GPUColor::GPUColorDict(d) => wgt::Color {
+                    r: *d.r,
+                    g: *d.g,
+                    b: *d.b,
+                    a: *d.a,
+                },
+                GPUColor::DoubleSequence(mut s) => {
+                    if s.len() < 3 {
+                        s.resize(3, Finite::wrap(0.0f64));
+                    }
+                    s.resize(4, Finite::wrap(1.0f64));
+                    wgt::Color {
+                        r: *s[0],
+                        g: *s[1],
+                        b: *s[2],
+                        a: *s[3],
+                    }
+                },
+            };
             wgpu_render::wgpu_render_pass_set_blend_color(render_pass, &colors);
         }
     }
@@ -146,20 +160,22 @@ impl GPURenderPassEncoderMethods for GPURenderPassEncoder {
 
     /// https://gpuweb.github.io/gpuweb/#dom-gpurenderpassencoder-endpass
     fn EndPass(&self) {
-        if let Some(render_pass) = self.render_pass.borrow_mut().take() {
-            self.channel
-                .0
-                .send(WebGPURequest::RunRenderPass {
+        let render_pass = self.render_pass.borrow_mut().take();
+        self.channel
+            .0
+            .send((
+                None,
+                WebGPURequest::RunRenderPass {
                     command_encoder_id: self.command_encoder.id().0,
                     render_pass,
-                })
-                .unwrap();
+                },
+            ))
+            .expect("Failed to send RunRenderPass");
 
-            self.command_encoder.set_state(
-                GPUCommandEncoderState::Open,
-                GPUCommandEncoderState::EncodingRenderPass,
-            );
-        }
+        self.command_encoder.set_state(
+            GPUCommandEncoderState::Open,
+            GPUCommandEncoderState::EncodingRenderPass,
+        );
     }
 
     /// https://gpuweb.github.io/gpuweb/#dom-gpurenderencoderbase-setpipeline
@@ -247,6 +263,21 @@ impl GPURenderPassEncoderMethods for GPURenderPassEncoder {
                 indirect_buffer.id().0,
                 indirect_offset,
             );
+        }
+    }
+
+    /// https://gpuweb.github.io/gpuweb/#dom-gpurenderpassencoder-executebundles
+    #[allow(unsafe_code)]
+    fn ExecuteBundles(&self, bundles: Vec<DomRoot<GPURenderBundle>>) {
+        let bundle_ids = bundles.iter().map(|b| b.id().0).collect::<Vec<_>>();
+        if let Some(render_pass) = self.render_pass.borrow_mut().as_mut() {
+            unsafe {
+                wgpu_render::wgpu_render_pass_execute_bundles(
+                    render_pass,
+                    bundle_ids.as_ptr(),
+                    bundle_ids.len(),
+                )
+            };
         }
     }
 }

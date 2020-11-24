@@ -13,7 +13,7 @@ use crate::dom::gpubuffer::GPUBuffer;
 use dom_struct::dom_struct;
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
-use webgpu::{WebGPU, WebGPUCommandBuffer};
+use webgpu::{WebGPU, WebGPUCommandBuffer, WebGPURequest};
 
 impl Eq for DomRoot<GPUBuffer> {}
 impl Hash for DomRoot<GPUBuffer> {
@@ -37,11 +37,12 @@ impl GPUCommandBuffer {
         channel: WebGPU,
         command_buffer: WebGPUCommandBuffer,
         buffers: HashSet<DomRoot<GPUBuffer>>,
+        label: Option<USVString>,
     ) -> Self {
         Self {
             channel,
             reflector_: Reflector::new(),
-            label: DomRefCell::new(None),
+            label: DomRefCell::new(label),
             command_buffer,
             buffers: DomRefCell::new(buffers.into_iter().map(|b| Dom::from_ref(&*b)).collect()),
         }
@@ -52,15 +53,31 @@ impl GPUCommandBuffer {
         channel: WebGPU,
         command_buffer: WebGPUCommandBuffer,
         buffers: HashSet<DomRoot<GPUBuffer>>,
+        label: Option<USVString>,
     ) -> DomRoot<Self> {
         reflect_dom_object(
             Box::new(GPUCommandBuffer::new_inherited(
                 channel,
                 command_buffer,
                 buffers,
+                label,
             )),
             global,
         )
+    }
+}
+
+impl Drop for GPUCommandBuffer {
+    fn drop(&mut self) {
+        if let Err(e) = self.channel.0.send((
+            None,
+            WebGPURequest::FreeCommandBuffer(self.command_buffer.0),
+        )) {
+            warn!(
+                "Failed to send FreeCommandBuffer({:?}) ({})",
+                self.command_buffer.0, e
+            );
+        }
     }
 }
 

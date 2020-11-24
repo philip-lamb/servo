@@ -45,7 +45,7 @@ use js::jsapi::Handle as RawHandle;
 use js::jsapi::HandleObject;
 use js::jsapi::HandleValue as RawHandleValue;
 use js::jsapi::Value;
-use js::jsapi::{CompileModule, ExceptionStackBehavior, FinishDynamicModuleImport};
+use js::jsapi::{CompileModuleDontInflate, ExceptionStackBehavior, FinishDynamicModuleImport};
 use js::jsapi::{GetModuleResolveHook, JSRuntime, SetModuleResolveHook};
 use js::jsapi::{GetRequestedModules, SetModuleMetadataHook};
 use js::jsapi::{Heap, JSContext, JS_ClearPendingException, SetModulePrivate};
@@ -56,7 +56,7 @@ use js::jsapi::{SetModuleDynamicImportHook, SetScriptPrivateReferenceHooks};
 use js::jsval::{JSVal, PrivateValue, UndefinedValue};
 use js::rust::jsapi_wrapped::{GetRequestedModuleSpecifier, JS_GetPendingException};
 use js::rust::jsapi_wrapped::{JS_GetArrayLength, JS_GetElement};
-use js::rust::transform_u16_to_source_text;
+use js::rust::transform_str_to_source_text;
 use js::rust::wrappers::JS_SetPendingException;
 use js::rust::CompileOptionsWrapper;
 use js::rust::{Handle, HandleValue, IntoHandle};
@@ -70,7 +70,6 @@ use net_traits::{FetchResponseListener, NetworkError};
 use net_traits::{ResourceFetchTiming, ResourceTimingType};
 use servo_url::ServoUrl;
 use std::collections::{HashMap, HashSet};
-use std::ffi;
 use std::mem;
 use std::rc::Rc;
 use std::str::FromStr;
@@ -420,20 +419,16 @@ impl ModuleTree {
         url: ServoUrl,
         options: ScriptFetchOptions,
     ) -> Result<ModuleObject, RethrowError> {
-        let module: Vec<u16> = module_script_text.encode_utf16().collect();
-
-        let url_cstr = ffi::CString::new(url.as_str().as_bytes()).unwrap();
-
         let _ac = JSAutoRealm::new(*global.get_cx(), *global.reflector().get_jsobject());
 
         let compile_options =
-            unsafe { CompileOptionsWrapper::new(*global.get_cx(), url_cstr.as_ptr(), 1) };
+            unsafe { CompileOptionsWrapper::new(*global.get_cx(), url.as_str(), 1) };
 
         unsafe {
-            rooted!(in(*global.get_cx()) let mut module_script = CompileModule(
+            rooted!(in(*global.get_cx()) let mut module_script = CompileModuleDontInflate(
                 *global.get_cx(),
                 compile_options.ptr,
-                &mut transform_u16_to_source_text(&module),
+                &mut transform_str_to_source_text(&module_script_text),
             ));
 
             if module_script.is_null() {

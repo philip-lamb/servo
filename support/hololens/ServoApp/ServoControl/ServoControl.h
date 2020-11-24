@@ -39,7 +39,7 @@ struct ServoControl : ServoControlT<ServoControl>, public servo::ServoDelegate {
 
   ServoControl();
 
-  Windows::Foundation::Collections::IVector<ServoApp::Pref> Preferences();
+  IVector<ServoApp::Pref> Preferences();
 
   void GoBack();
   void GoForward();
@@ -100,6 +100,14 @@ struct ServoControl : ServoControlT<ServoControl>, public servo::ServoDelegate {
     mOnTitleChangedEvent.remove(token);
   }
 
+  winrt::event_token
+  OnServoPanic(Windows::Foundation::EventHandler<hstring> const &handler) {
+    return mOnServoPanic.add(handler);
+  };
+  void OnServoPanic(winrt::event_token const &token) noexcept {
+    mOnServoPanic.remove(token);
+  }
+
   winrt::event_token OnHistoryChanged(HistoryChangedDelegate const &handler) {
     return mOnHistoryChangedEvent.add(handler);
   };
@@ -144,6 +152,14 @@ struct ServoControl : ServoControlT<ServoControl>, public servo::ServoDelegate {
   }
 
   winrt::event_token
+  OnMediaSessionPosition(MediaSessionPositionDelegate const &handler) {
+    return mOnMediaSessionPositionEvent.add(handler);
+  };
+  void OnMediaSessionPosition(winrt::event_token const &token) noexcept {
+    mOnMediaSessionPositionEvent.remove(token);
+  }
+
+  winrt::event_token
   OnMediaSessionMetadata(MediaSessionMetadataDelegate const &handler) {
     return mOnMediaSessionMetadataEvent.add(handler);
   };
@@ -173,11 +189,13 @@ struct ServoControl : ServoControlT<ServoControl>, public servo::ServoDelegate {
   virtual void OnServoURLChanged(winrt::hstring);
   virtual bool OnServoAllowNavigation(winrt::hstring);
   virtual void OnServoAnimatingChanged(bool);
+  virtual void OnServoPanic(hstring);
   virtual void OnServoIMEHide();
   virtual void OnServoIMEShow(hstring text, int32_t, int32_t, int32_t, int32_t);
   virtual void OnServoMediaSessionMetadata(winrt::hstring, winrt::hstring,
                                            winrt::hstring);
   virtual void OnServoMediaSessionPlaybackStateChange(int);
+  virtual void OnServoMediaSessionPosition(double, double, double);
   virtual void OnServoPromptAlert(winrt::hstring, bool);
   virtual void OnServoShowContextMenu(std::optional<winrt::hstring>,
                                       std::vector<winrt::hstring>);
@@ -193,6 +211,7 @@ struct ServoControl : ServoControlT<ServoControl>, public servo::ServoDelegate {
 private:
   winrt::event<Windows::Foundation::EventHandler<hstring>> mOnURLChangedEvent;
   winrt::event<Windows::Foundation::EventHandler<hstring>> mOnTitleChangedEvent;
+  winrt::event<Windows::Foundation::EventHandler<hstring>> mOnServoPanic;
   winrt::event<HistoryChangedDelegate> mOnHistoryChangedEvent;
   winrt::event<DevtoolsStatusChangedDelegate> mOnDevtoolsStatusChangedEvent;
   winrt::event<EventDelegate> mOnLoadStartedEvent;
@@ -200,6 +219,7 @@ private:
   winrt::event<EventDelegate> mOnCaptureGesturesStartedEvent;
   winrt::event<EventDelegate> mOnCaptureGesturesEndedEvent;
   winrt::event<MediaSessionMetadataDelegate> mOnMediaSessionMetadataEvent;
+  winrt::event<MediaSessionPositionDelegate> mOnMediaSessionPositionEvent;
   winrt::event<Windows::Foundation::EventHandler<int>>
       mOnMediaSessionPlaybackStateChangeEvent;
 
