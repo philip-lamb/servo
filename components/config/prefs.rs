@@ -192,6 +192,9 @@ mod gen {
                         allowed_in_nonsecure_contexts: bool,
                     }
                 },
+                script: {
+                    asynch: bool,
+                },
                 serviceworker: {
                     enabled: bool,
                     timeout_seconds: i64,
@@ -279,6 +282,7 @@ mod gen {
                     enabled: bool,
                     #[serde(default)]
                     test: bool,
+                    first_person_observer_view: bool,
                     glwindow: {
                         #[serde(default)]
                         enabled: bool,
@@ -297,6 +301,8 @@ mod gen {
                         enabled: bool,
                     },
                     sessionavailable: bool,
+                    #[serde(rename = "dom.webxr.unsafe-assume-user-intent")]
+                    unsafe_assume_user_intent: bool,
                 },
                 worklet: {
                     blockingsleep: {
@@ -476,6 +482,9 @@ mod gen {
                 max_length: i64,
             },
             shell: {
+                crash_reporter: {
+                    enabled: bool,
+                },
                 homepage: String,
                 keep_screen_on: {
                     enabled: bool,

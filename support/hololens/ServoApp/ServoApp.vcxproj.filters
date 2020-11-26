@@ -24,6 +24,10 @@
     <ClCompile Include="Devtools\Client.cpp">
       <Filter>Devtools</Filter>
     </ClCompile>
+    <ClCompile Include="Bookmarks.cpp" />
+    <ClCompile Include="ServoControl\Crash.cpp">
+      <Filter>ServoControl</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="pch.h" />
@@ -44,6 +48,10 @@
       <Filter>Devtools</Filter>
     </ClInclude>
     <ClInclude Include="ServoControl\Keys.h">
+      <Filter>ServoControl</Filter>
+    </ClInclude>
+    <ClInclude Include="Bookmarks.h" />
+    <ClInclude Include="ServoControl\Crash.h">
       <Filter>ServoControl</Filter>
     </ClInclude>
   </ItemGroup>
@@ -855,6 +863,55 @@
     <None Include="..\..\..\target\x86_64-uwp-windows-msvc\release\swresample-3.dll">
       <Filter>ReleaseServoDLLs</Filter>
     </None>
+    <None Include="$(OpenXRLoaderBinaryRoot)\bin\openxr_loader.dll" />
+    <None Include="..\..\..\target\aarch64-uwp-windows-msvc\debug\gstaudiobuffersplit.dll">
+      <Filter>DebugARM64ServoDLLs</Filter>
+    </None>
+    <None Include="..\..\..\target\aarch64-uwp-windows-msvc\debug\gstgio.dll">
+      <Filter>DebugARM64ServoDLLs</Filter>
+    </None>
+    <None Include="..\..\..\target\aarch64-uwp-windows-msvc\debug\gstid3tag.dll">
+      <Filter>DebugARM64ServoDLLs</Filter>
+    </None>
+    <None Include="..\..\..\target\aarch64-uwp-windows-msvc\debug\gstid3demux.dll">
+      <Filter>DebugARM64ServoDLLs</Filter>
+    </None>
+    <None Include="..\..\..\target\aarch64-uwp-windows-msvc\release\gstaudiobuffersplit.dll">
+      <Filter>ReleaseARM64ServoDLLs</Filter>
+    </None>
+    <None Include="..\..\..\target\aarch64-uwp-windows-msvc\release\gstgio.dll">
+      <Filter>ReleaseARM64ServoDLLs</Filter>
+    </None>
+    <None Include="..\..\..\target\aarch64-uwp-windows-msvc\release\gstid3tag.dll">
+      <Filter>ReleaseARM64ServoDLLs</Filter>
+    </None>
+    <None Include="..\..\..\target\aarch64-uwp-windows-msvc\release\gstid3demux.dll">
+      <Filter>ReleaseARM64ServoDLLs</Filter>
+    </None>
+    <None Include="..\..\..\target\x86_64-uwp-windows-msvc\debug\gstaudiobuffersplit.dll">
+      <Filter>DebugServoDLLs</Filter>
+    </None>
+    <None Include="..\..\..\target\x86_64-uwp-windows-msvc\debug\gstgio.dll">
+      <Filter>DebugServoDLLs</Filter>
+    </None>
+    <None Include="..\..\..\target\x86_64-uwp-windows-msvc\debug\gstid3tag.dll">
+      <Filter>DebugServoDLLs</Filter>
+    </None>
+    <None Include="..\..\..\target\x86_64-uwp-windows-msvc\debug\gstid3demux.dll">
+      <Filter>DebugServoDLLs</Filter>
+    </None>
+    <None Include="..\..\..\target\x86_64-uwp-windows-msvc\release\gstaudiobuffersplit.dll">
+      <Filter>ReleaseServoDLLs</Filter>
+    </None>
+    <None Include="..\..\..\target\x86_64-uwp-windows-msvc\release\gstgio.dll">
+      <Filter>ReleaseServoDLLs</Filter>
+    </None>
+    <None Include="..\..\..\target\x86_64-uwp-windows-msvc\release\gstid3tag.dll">
+      <Filter>ReleaseServoDLLs</Filter>
+    </None>
+    <None Include="..\..\..\target\x86_64-uwp-windows-msvc\release\gstid3demux.dll">
+      <Filter>ReleaseServoDLLs</Filter>
+    </None>
   </ItemGroup>
   <ItemGroup>
     <Filter Include="Assets">
@@ -875,13 +932,16 @@
     <Filter Include="ServoControl">
       <UniqueIdentifier>{d21a959c-19d1-4a54-b942-692c27e5b3a6}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Strings">
+    <Filter Include="Resources">
+      <UniqueIdentifier>{c05cce0c-d62c-11ea-87d0-0242ac130003}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Resources\Strings">
       <UniqueIdentifier>{49e23631-d899-4caf-bf7b-30776fee4d09}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Strings\en-US">
+    <Filter Include="Resources\Strings\en-US">
       <UniqueIdentifier>{c12ff5d4-3730-4a0e-8b16-56ded3138875}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Strings\fr-FR">
+    <Filter Include="Resources\Strings\fr-FR">
       <UniqueIdentifier>{b7d3273d-a27c-4176-87a1-3d5222b796b3}</UniqueIdentifier>
     </Filter>
     <Filter Include="Devtools">
@@ -901,11 +961,14 @@
     <ApplicationDefinition Include="App.xaml" />
   </ItemGroup>
   <ItemGroup>
-    <PRIResource Include="Strings\en-US\Resources.resw">
-      <Filter>Strings\en-US</Filter>
+    <PRIResource Include="Resources\PromotedPrefs.resw">
+      <Filter>Resources</Filter>
     </PRIResource>
-    <PRIResource Include="Strings\fr-FR\Resources.resw">
-      <Filter>Strings\fr-FR</Filter>
+    <PRIResource Include="Resources\Strings\en-US\Resources.resw">
+      <Filter>Resources\Strings\en-US</Filter>
+    </PRIResource>
+    <PRIResource Include="Resources\Strings\fr-FR\Resources.resw">
+      <Filter>Resources\Strings\fr-FR</Filter>
     </PRIResource>
   </ItemGroup>
 </Project>

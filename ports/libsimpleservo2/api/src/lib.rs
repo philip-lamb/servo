@@ -111,7 +111,7 @@ pub trait HostTrait {
     /// Throbber stops spinning.
     fn on_load_ended(&self);
     /// Page title has changed.
-    fn on_title_changed(&self, title: String);
+    fn on_title_changed(&self, title: Option<String>);
     /// Allow Navigation.
     fn on_allow_navigation(&self, url: String) -> bool;
     /// Page URL has changed.
@@ -147,6 +147,8 @@ pub trait HostTrait {
     fn on_media_session_set_position_state(&self, duration: f64, position: f64, playback_rate: f64);
     /// Called when devtools server is started
     fn on_devtools_started(&self, port: Result<u16, ()>, token: String);
+    /// Called when we get a panic message from constellation
+    fn on_panic(&self, reason: String, backtrace: Option<String>);
 }
 
 struct ServoGfx {
@@ -418,6 +420,13 @@ impl ServoGlue {
     }
 
     /// Reload the page.
+    pub fn clear_cache(&mut self) -> Result<(), &'static str> {
+        info!("clear_cache");
+        let event = WindowEvent::ClearCache;
+        self.process_event(event)
+    }
+
+    /// Reload the page.
     pub fn reload(&mut self) -> Result<(), &'static str> {
         info!("reload");
         let browser_id = self.get_browser_id()?;
@@ -643,16 +652,6 @@ impl ServoGlue {
         for (browser_id, event) in self.servo.get_events() {
             match event {
                 EmbedderMsg::ChangePageTitle(title) => {
-                    let fallback_title: String = if let Some(ref current_url) = self.current_url {
-                        current_url.to_string()
-                    } else {
-                        String::from("Untitled")
-                    };
-                    let title = match title {
-                        Some(ref title) if title.len() > 0 => &**title,
-                        _ => &fallback_title,
-                    };
-                    let title = format!("{} - Servo", title);
                     self.callbacks.host_callbacks.on_title_changed(title);
                 },
                 EmbedderMsg::AllowNavigationRequest(pipeline_id, url) => {
@@ -819,6 +818,9 @@ impl ServoGlue {
                         .host_callbacks
                         .on_devtools_started(port, token);
                 },
+                EmbedderMsg::Panic(reason, backtrace) => {
+                    self.callbacks.host_callbacks.on_panic(reason, backtrace);
+                },
                 EmbedderMsg::Status(..) |
                 EmbedderMsg::SelectFiles(..) |
                 EmbedderMsg::MoveTo(..) |
@@ -828,7 +830,6 @@ impl ServoGlue {
                 EmbedderMsg::NewFavicon(..) |
                 EmbedderMsg::HeadParsed |
                 EmbedderMsg::SetFullscreenState(..) |
-                EmbedderMsg::Panic(..) |
                 EmbedderMsg::ReportProfile(..) => {},
             }
         }
@@ -1027,7 +1028,7 @@ impl EmbedderMethods for ServoEmbedderCallbacks {
             }
         }
 
-        if openxr::create_instance(false).is_ok() {
+        if openxr::create_instance(false, false).is_ok() {
             let discovery =
                 openxr::OpenXrDiscovery::new(Box::new(ContextMenuCallback(embedder_proxy)));
             registry.register(discovery);

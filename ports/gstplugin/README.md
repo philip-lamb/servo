@@ -3,7 +3,7 @@
 ## Supported platforms
 
 * MacOS + CGL
-* Linux + Wayland (currently no WebGL content)
+* Linux + Wayland
 
 ## Build
 
@@ -28,7 +28,7 @@ cp target/release/libgstservoplugin.* target/gstplugins
 To run locally:
 ```
 GST_PLUGIN_PATH=target/gstplugins \
-  gst-launch-1.0 servowebsrc \
+  gst-launch-1.0 -e servowebsrc \
     ! video/x-raw\(memory:GLMemory\),framerate=50/1,width=1920,height=1080,format=RGBA \
     ! glimagesink rotate-method=vertical-flip
 ```
@@ -36,24 +36,40 @@ GST_PLUGIN_PATH=target/gstplugins \
 To stream over the network:
 ```
 GST_PLUGIN_PATH=target/gstplugins \
-  gst-launch-1.0 servowebsrc \
+  gst-launch-1.0 -e servowebsrc \
     ! video/x-raw\(memory:GLMemory\),framerate=50/1,width=512,height=256 \
+    ! glvideoflip video-direction=vert \
     ! glcolorconvert \
     ! gldownload \
-    ! videoflip video-direction=vert \
     ! theoraenc \
     ! oggmux \
     ! tcpserversink host=127.0.0.1 port=8080
 ```
 
+To stream to youtube live, first go to youtube studio and create a new live stream, with its token, then:
+```
+GST_PLUGIN_PATH=target/gstplugins \
+  gst-launch-1.0 -e servowebsrc \
+    ! video/x-raw\(memory:GLMemory\),framerate=50/1,width=1960,height=1080 \
+    ! glvideoflip video-direction=vert \
+    ! glcolorconvert \
+    ! gldownload \
+    ! x264enc bitrate=6000 \
+    ! flvmux name=mux \
+    ! rtmpsink location="rtmp://a.rtmp.youtube.com/live2/x/$TOKEN" \
+    audiotestsrc wave=silence \
+    ! voaacenc bitrate=128000 \
+    ! mux.
+```
+
 To  save to a file:
 ```
 GST_PLUGIN_PATH=target/gstplugins \
-  gst-launch-1.0 servowebsrc \
+  gst-launch-1.0 -e servowebsrc \
     ! video/x-raw\(memory:GLMemory\),framerate=50/1,width=512,height=256 \
+    ! glvideoflip video-direction=vert \
     ! glcolorconvert \
     ! gldownload \
-    ! videoflip video-direction=vert \
     ! theoraenc \
     ! oggmux \
     ! filesink location=test.ogg
@@ -74,6 +90,24 @@ GST_PLUGIN_PATH=target/gstplugins \
 ```
 This requires the webxr content to support the `sessionavailable` event for launching directly into immersive mode.
 Values for `webxr` include `none`, `left-right`, `red-cyan`, `cubemap` and `spherical`.
+
+To stream a Hubs room to twitch (there'll be ~30s black at the beginning while Hubs starts up):
+```
+GST_PLUGIN_PATH=$PWD/target/gstplugins \
+  gst-launch-1.0 -e servowebsrc \
+      url="https://hubs.mozilla.com/$ROOM?no_force_webvr&vr_entry_type=vr_now" \
+      webxr=red-cyan \
+      prefs='{"dom.gamepad.enabled":true, "dom.svg.enabled":true, "dom.canvas_capture.enabled": true, "dom.canvas_capture.enabled":true, "dom.webrtc.enabled":true, "dom.webrtc.transceiver.enabled":true}' \
+    ! video/x-raw\(memory:GLMemory\),framerate=50/1,width=1920,height=1080,format=RGBA \
+    ! glvideoflip video-direction=vert \
+    ! glcolorconvert \
+    ! gldownload \
+    ! queue \
+    ! x264enc bitrate=4500 \
+    ! video/x-h264, profile=high \
+    ! flvmux streamable=true \
+    ! rtmpsink location="rtmp://$ENDPOINT.twitch.tv/app/$STREAM_KEY"
+```
 
 *Note*: killing the gstreamer pipeline with control-C sometimes locks up macOS to the point
 of needing a power cycle. Killing the pipeline by closing the window seems to work.
@@ -98,7 +132,7 @@ GST_PLUGIN_PATH=target/gstplugins \
 If that doesn't work, try:
 ```
 GST_PLUGIN_PATH=target/gstplugins \
-  gst-in2spect-1.0 target/gstplugins/libgstservoplugin.so
+  gst-inspect-1.0 target/gstplugins/libgstservoplugin.so
 ```
 
 If you get reports about the plugin being blacklisted, remove the (global!) gstreamer cache, e.g. under Linux:

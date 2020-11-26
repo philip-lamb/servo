@@ -6,9 +6,13 @@ import sys
 import mock
 import six
 
-from ...localpaths import repo_root
-from .. import lint as lint_mod
-from ..lint import filter_ignorelist_errors, parse_ignorelist, lint, create_parser
+here = os.path.dirname(__file__)
+root = os.path.abspath(os.path.join(here, "..", "..", ".."))
+sys.path.insert(0, root)
+
+from tools.localpaths import repo_root
+from tools.lint import lint as lint_mod
+from tools.lint.lint import filter_ignorelist_errors, parse_ignorelist, lint, create_parser
 
 _dummy_repo = os.path.join(os.path.dirname(__file__), "dummy")
 
@@ -530,7 +534,9 @@ def test_main_with_args():
                                           [os.path.relpath(os.path.join(os.getcwd(), x), repo_root)
                                            for x in ['a', 'b', 'c']],
                                           "normal",
-                                          None)
+                                          None,
+                                          None,
+                                          0)
     finally:
         sys.argv = orig_argv
 
@@ -542,7 +548,7 @@ def test_main_no_args():
         with _mock_lint('lint', return_value=True) as m:
             with _mock_lint('changed_files', return_value=['foo', 'bar']):
                 lint_mod.main(**vars(create_parser().parse_args()))
-                m.assert_called_once_with(repo_root, ['foo', 'bar'], "normal", None)
+                m.assert_called_once_with(repo_root, ['foo', 'bar'], "normal", None, None, 0)
     finally:
         sys.argv = orig_argv
 
@@ -554,6 +560,6 @@ def test_main_all():
         with _mock_lint('lint', return_value=True) as m:
             with _mock_lint('all_filesystem_paths', return_value=['foo', 'bar']):
                 lint_mod.main(**vars(create_parser().parse_args()))
-                m.assert_called_once_with(repo_root, ['foo', 'bar'], "normal", None)
+                m.assert_called_once_with(repo_root, ['foo', 'bar'], "normal", None, None, 0)
     finally:
         sys.argv = orig_argv

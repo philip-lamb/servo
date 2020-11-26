@@ -5,7 +5,6 @@
 use crate::dom::bindings::cell::{DomRefCell, RefMut};
 use crate::dom::bindings::codegen::Bindings::BroadcastChannelBinding::BroadcastChannelMethods;
 use crate::dom::bindings::codegen::Bindings::EventSourceBinding::EventSourceBinding::EventSourceMethods;
-use crate::dom::bindings::codegen::Bindings::GPUValidationErrorBinding::GPUError;
 use crate::dom::bindings::codegen::Bindings::ImageBitmapBinding::{
     ImageBitmapOptions, ImageBitmapSource,
 };
@@ -36,9 +35,7 @@ use crate::dom::eventsource::EventSource;
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::file::File;
 use crate::dom::gpudevice::GPUDevice;
-use crate::dom::gpuoutofmemoryerror::GPUOutOfMemoryError;
-use crate::dom::gpuvalidationerror::GPUValidationError;
-use crate::dom::htmlscriptelement::ScriptId;
+use crate::dom::htmlscriptelement::{ScriptId, SourceCode};
 use crate::dom::identityhub::Identities;
 use crate::dom::imagebitmap::ImageBitmap;
 use crate::dom::messageevent::MessageEvent;
@@ -86,7 +83,7 @@ use js::jsapi::Compile1;
 use js::jsapi::SetScriptPrivate;
 use js::jsapi::{CurrentGlobalOrNull, GetNonCCWObjectGlobal};
 use js::jsapi::{HandleObject, Heap};
-use js::jsapi::{JSContext, JSObject};
+use js::jsapi::{JSContext, JSObject, JSScript};
 use js::jsval::PrivateValue;
 use js::jsval::{JSVal, UndefinedValue};
 use js::panic::maybe_resume_unwind;
@@ -121,7 +118,6 @@ use std::borrow::Cow;
 use std::cell::Cell;
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, VecDeque};
-use std::ffi::CString;
 use std::mem;
 use std::ops::Index;
 use std::rc::Rc;
@@ -130,7 +126,7 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use time::{get_time, Timespec};
 use uuid::Uuid;
-use webgpu::{identity::WebGPUOpResult, WebGPUDevice};
+use webgpu::{identity::WebGPUOpResult, ErrorScopeId, WebGPUDevice};
 
 #[derive(JSTraceable)]
 pub struct AutoCloseWorker {
@@ -2552,8 +2548,9 @@ impl GlobalScope {
         fetch_options: ScriptFetchOptions,
         script_base_url: ServoUrl,
     ) -> bool {
+        let source_code = SourceCode::Text(Rc::new(DOMString::from_string((*code).to_string())));
         self.evaluate_script_on_global_with_result(
-            code,
+            &source_code,
             "",
             rval,
             1,
@@ -2566,7 +2563,7 @@ impl GlobalScope {
     #[allow(unsafe_code)]
     pub fn evaluate_script_on_global_with_result(
         &self,
-        code: &str,
+        code: &SourceCode,
         filename: &str,
         rval: MutableHandleValue,
         line_number: u32,
@@ -2588,29 +2585,36 @@ impl GlobalScope {
             self.time_profiler_chan().clone(),
             || {
                 let cx = self.get_cx();
-                let filename = CString::new(filename).unwrap();
 
                 let ar = enter_realm(&*self);
 
                 let _aes = AutoEntryScript::new(self);
 
                 unsafe {
-                    let options = CompileOptionsWrapper::new(*cx, filename.as_ptr(), line_number);
+                    rooted!(in(*cx) let mut compiled_script = std::ptr::null_mut::<JSScript>());
+                    match code {
+                        SourceCode::Text(text_code) => {
+                            let options = CompileOptionsWrapper::new(*cx, filename, line_number);
 
-                    debug!("compiling Dom string");
-                    rooted!(in(*cx) let compiled_script =
-                        Compile1(
-                            *cx,
-                            options.ptr,
-                            &mut transform_str_to_source_text(code),
-                        )
-                    );
+                            debug!("compiling dom string");
+                            compiled_script.set(Compile1(
+                                *cx,
+                                options.ptr,
+                                &mut transform_str_to_source_text(text_code),
+                            ));
 
-                    if compiled_script.is_null() {
-                        debug!("error compiling Dom string");
-                        report_pending_exception(*cx, true, InRealm::Entered(&ar));
-                        return false;
-                    }
+                            if compiled_script.is_null() {
+                                debug!("error compiling Dom string");
+                                report_pending_exception(*cx, true, InRealm::Entered(&ar));
+                                return false;
+                            }
+                        },
+                        SourceCode::Compiled(pre_compiled_script) => {
+                            compiled_script.set(pre_compiled_script.source_code.get());
+                        },
+                    };
+
+                    assert!(!compiled_script.is_null());
 
                     rooted!(in(*cx) let mut script_private = UndefinedValue());
                     JS_GetScriptPrivate(*compiled_script, script_private.handle_mut());
@@ -2635,7 +2639,6 @@ impl GlobalScope {
                         );
                     }
 
-                    debug!("evaluating Dom string");
                     let result = JS_ExecuteScript(*cx, compiled_script.handle(), rval);
 
                     if !result {
@@ -3014,18 +3017,12 @@ impl GlobalScope {
         let _ = self.gpu_devices.borrow_mut().remove(&device);
     }
 
-    pub fn handle_wgpu_msg(&self, device: WebGPUDevice, scope: u64, result: WebGPUOpResult) {
-        let result = match result {
-            WebGPUOpResult::Success => Ok(()),
-            WebGPUOpResult::ValidationError(m) => {
-                let val_err = GPUValidationError::new(&self, DOMString::from_string(m));
-                Err(GPUError::GPUValidationError(val_err))
-            },
-            WebGPUOpResult::OutOfMemoryError => {
-                let oom_err = GPUOutOfMemoryError::new(&self);
-                Err(GPUError::GPUOutOfMemoryError(oom_err))
-            },
-        };
+    pub fn handle_wgpu_msg(
+        &self,
+        device: WebGPUDevice,
+        scope: Option<ErrorScopeId>,
+        result: WebGPUOpResult,
+    ) {
         self.gpu_devices
             .borrow()
             .get(&device)

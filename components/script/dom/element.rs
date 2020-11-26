@@ -1953,7 +1953,7 @@ impl ElementMethods for Element {
     // https://dom.spec.whatwg.org/#dom-element-classlist
     fn ClassList(&self) -> DomRoot<DOMTokenList> {
         self.class_list
-            .or_init(|| DOMTokenList::new(self, &local_name!("class")))
+            .or_init(|| DOMTokenList::new(self, &local_name!("class"), None))
     }
 
     // https://dom.spec.whatwg.org/#dom-element-attributes
@@ -2637,6 +2637,11 @@ impl ElementMethods for Element {
         self.upcast::<Node>().append(nodes)
     }
 
+    // https://dom.spec.whatwg.org/#dom-parentnode-replacechildren
+    fn ReplaceChildren(&self, nodes: Vec<NodeOrString>) -> ErrorResult {
+        self.upcast::<Node>().replace_children(nodes)
+    }
+
     // https://dom.spec.whatwg.org/#dom-parentnode-queryselector
     fn QuerySelector(&self, selectors: DOMString) -> Fallible<Option<DomRoot<Element>>> {
         let root = self.upcast::<Node>();
@@ -3302,6 +3307,10 @@ impl Element {
                 HTMLElementTypeId::HTMLLabelElement,
             )) => {
                 let element = self.downcast::<HTMLLabelElement>().unwrap();
+                Some(element as &dyn Activatable)
+            },
+            NodeTypeId::Element(ElementTypeId::HTMLElement(HTMLElementTypeId::HTMLElement)) => {
+                let element = self.downcast::<HTMLElement>().unwrap();
                 Some(element as &dyn Activatable)
             },
             _ => None,

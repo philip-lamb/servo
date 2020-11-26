@@ -42,7 +42,7 @@ from servo.packages import WINDOWS_MSVC as msvc_deps
 from servo.util import host_triple
 
 BIN_SUFFIX = ".exe" if sys.platform == "win32" else ""
-NIGHTLY_REPOSITORY_URL = "https://servo-builds.s3.amazonaws.com/"
+NIGHTLY_REPOSITORY_URL = "https://servo-builds2.s3.amazonaws.com/"
 
 
 @contextlib.contextmanager
@@ -883,6 +883,7 @@ install them, let us know by filing a bug!")
                 not target
                 or ("armv7" in target and "android" in target)
                 or "x86_64" in target
+                or "uwp" in target
             ):
                 media_stack = "gstreamer"
             else:

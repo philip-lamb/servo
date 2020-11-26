@@ -1,5 +1,10 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
 #include "pch.h"
 #include "Servo.h"
+#include "Crash.h"
 #include <EGL/egl.h>
 #include "../DefaultUrl.h"
 
@@ -21,11 +26,16 @@ void on_title_changed(const char *title) {
   sServo->Delegate().OnServoTitleChanged(char2hstring(title));
 }
 
-void on_url_changed(const char *url) {
-  sServo->Delegate().OnServoURLChanged(char2hstring(url));
+void on_url_changed(const char *curl) {
+  auto url = char2hstring(curl);
+  sServo->CurrentUrl(url);
+  sServo->Delegate().OnServoURLChanged(url);
 }
 
-void wakeup() { sServo->Delegate().WakeUp(); }
+void wakeup() {
+  if (sServo != nullptr)
+    sServo->Delegate().WakeUp();
+}
 
 bool on_allow_navigation(const char *url) {
   return sServo->Delegate().OnServoAllowNavigation(char2hstring(url));
@@ -35,12 +45,25 @@ void on_animating_changed(bool aAnimating) {
   sServo->Delegate().OnServoAnimatingChanged(aAnimating);
 }
 
-void on_panic(const char *backtrace) {
+void on_panic(const char *cbacktrace) {
+
   if (sLogHandle != INVALID_HANDLE_VALUE) {
     CloseHandle(sLogHandle);
     sLogHandle = INVALID_HANDLE_VALUE;
   }
-  throw hresult_error(E_FAIL, char2hstring(backtrace));
+
+  auto backtrace = char2hstring(cbacktrace);
+
+  try {
+    WriteCrashReport(backtrace, sServo->CurrentUrl());
+  } catch (...) {
+    log(L"Failed to log panic to crash report");
+  }
+
+  // If this is happening in the GL thread, the app can continue running.
+  // So let's show the crash report:
+  sServo->Delegate().OnServoPanic(backtrace);
+  throw hresult_error(E_FAIL, backtrace);
 }
 
 void on_ime_show(const char *text, int32_t x, int32_t y, int32_t width,
@@ -61,6 +84,12 @@ void set_clipboard_contents(const char *) {
 const char *get_clipboard_contents() {
   // FIXME
   return nullptr;
+}
+
+void on_media_session_set_position_state(double duration, double position,
+                                         double playback_rate) {
+  return sServo->Delegate().OnServoMediaSessionPosition(duration, position,
+                                                        playback_rate);
 }
 
 void on_media_session_metadata(const char *title, const char *album,
@@ -136,7 +165,7 @@ const char *prompt_input(const char *message, const char *default,
 
 Servo::Servo(std::optional<hstring> initUrl, hstring args, GLsizei width,
              GLsizei height, EGLNativeWindowType eglNativeWindow, float dpi,
-             ServoDelegate &aDelegate)
+             ServoDelegate &aDelegate, bool transient)
     : mWindowHeight(height), mWindowWidth(width), mDelegate(aDelegate) {
   ApplicationDataContainer localSettings =
       ApplicationData::Current().LocalSettings();
@@ -149,9 +178,18 @@ Servo::Servo(std::optional<hstring> initUrl, hstring args, GLsizei width,
 
   std::vector<capi::CPref> cprefs;
 
+  // Ensure few things stay in memories long enough as we send raw
+  // pointers to Rust.
+  std::vector<std::unique_ptr<char *>> memChar;
+  std::vector<std::unique_ptr<bool>> memBool;
+  std::vector<std::unique_ptr<int64_t>> memInt;
+  std::vector<std::unique_ptr<double>> memDouble;
+
   for (auto pref : prefs.Values()) {
 
-    auto key = *hstring2char(pref.Key());
+    auto charkey = hstring2char(pref.Key());
+    auto key = *charkey.get();
+    memChar.push_back(std::move(charkey));
     auto value = pref.Value();
 
     auto type = value.as<Windows::Foundation::IPropertyValue>().Type();
@@ -161,20 +199,24 @@ Servo::Servo(std::optional<hstring> initUrl, hstring args, GLsizei width,
     cpref.value = NULL;
     if (type == Windows::Foundation::PropertyType::Boolean) {
       cpref.pref_type = capi::CPrefType::Bool;
-      auto val = unbox_value<bool>(value);
-      cpref.value = &val;
+      auto val = std::make_unique<bool>(unbox_value<bool>(value));
+      cpref.value = val.get();
+      memBool.push_back(std::move(val));
     } else if (type == Windows::Foundation::PropertyType::String) {
       cpref.pref_type = capi::CPrefType::Str;
-      auto val = unbox_value<hstring>(value);
-      cpref.value = *hstring2char(val);
+      auto val = hstring2char(unbox_value<hstring>(value));
+      cpref.value = *val.get();
+      memChar.push_back(std::move(val));
     } else if (type == Windows::Foundation::PropertyType::Int64) {
       cpref.pref_type = capi::CPrefType::Int;
-      auto val = unbox_value<int64_t>(value);
-      cpref.value = &val;
+      auto val = std::make_unique<int64_t>(unbox_value<int64_t>(value));
+      cpref.value = val.get();
+      memInt.push_back(std::move(val));
     } else if (type == Windows::Foundation::PropertyType::Double) {
       cpref.pref_type = capi::CPrefType::Float;
-      auto val = unbox_value<double>(value);
-      cpref.value = &val;
+      auto val = std::make_unique<double>(unbox_value<double>(value));
+      cpref.value = val.get();
+      memDouble.push_back(std::move(val));
     } else if (type == Windows::Foundation::PropertyType::Empty) {
       cpref.pref_type = capi::CPrefType::Missing;
     } else {
@@ -190,6 +232,14 @@ Servo::Servo(std::optional<hstring> initUrl, hstring args, GLsizei width,
 #ifdef OVERRIDE_DEFAULT_URL
     setNonPersistentHomepage(OVERRIDE_DEFAULT_URL, cprefs);
 #endif
+  }
+
+  if (transient) {
+    capi::CPref cpref;
+    cpref.key = "dom.webxr.sessionavailable";
+    cpref.pref_type = capi::CPrefType::Bool;
+    cpref.value = &transient;
+    cprefs.push_back(cpref);
   }
 
   capi::CPrefList prefsList = {cprefs.size(), cprefs.data()};
@@ -224,6 +274,10 @@ Servo::Servo(std::optional<hstring> initUrl, hstring args, GLsizei width,
   sServo = this; // FIXME;
 
   auto current = ApplicationData::Current();
+  auto gstLog = std::wstring(current.LocalFolder().Path()) + L"\\gst.log";
+  SetEnvironmentVariable(L"GST_DEBUG_FILE", gstLog.c_str());
+  // SetEnvironmentVariableA("GST_DEBUG", "4");
+
   auto filePath = std::wstring(current.LocalFolder().Path()) + L"\\stdout.txt";
   sLogHandle =
       CreateFile2(filePath.c_str(), GENERIC_WRITE, 0, CREATE_ALWAYS, nullptr);
@@ -239,29 +293,32 @@ Servo::Servo(std::optional<hstring> initUrl, hstring args, GLsizei width,
         std::to_string(GetLastError()));
   }
 
-  capi::CHostCallbacks c;
-  c.on_load_started = &on_load_started;
-  c.on_load_ended = &on_load_ended;
-  c.on_title_changed = &on_title_changed;
-  c.on_url_changed = &on_url_changed;
-  c.on_history_changed = &on_history_changed;
-  c.on_animating_changed = &on_animating_changed;
-  c.on_shutdown_complete = &on_shutdown_complete;
-  c.on_allow_navigation = &on_allow_navigation;
-  c.on_ime_show = &on_ime_show;
-  c.on_ime_hide = &on_ime_hide;
-  c.get_clipboard_contents = &get_clipboard_contents;
-  c.set_clipboard_contents = &set_clipboard_contents;
-  c.on_media_session_metadata = &on_media_session_metadata;
-  c.on_media_session_playback_state_change =
-      &on_media_session_playback_state_change;
-  c.prompt_alert = &prompt_alert;
-  c.prompt_ok_cancel = &prompt_ok_cancel;
-  c.prompt_yes_no = &prompt_yes_no;
-  c.prompt_input = &prompt_input;
-  c.on_devtools_started = &on_devtools_started;
-  c.show_context_menu = &show_context_menu;
-  c.on_log_output = &on_log_output;
+  capi::CHostCallbacks c = capi::CHostCallbacks{
+      .on_load_started = &on_load_started,
+      .on_load_ended = &on_load_ended,
+      .on_title_changed = &on_title_changed,
+      .on_allow_navigation = &on_allow_navigation,
+      .on_url_changed = &on_url_changed,
+      .on_history_changed = &on_history_changed,
+      .on_animating_changed = &on_animating_changed,
+      .on_shutdown_complete = &on_shutdown_complete,
+      .on_ime_show = &on_ime_show,
+      .on_ime_hide = &on_ime_hide,
+      .get_clipboard_contents = &get_clipboard_contents,
+      .set_clipboard_contents = &set_clipboard_contents,
+      .on_media_session_metadata = &on_media_session_metadata,
+      .on_media_session_playback_state_change =
+          &on_media_session_playback_state_change,
+      .on_media_session_set_position_state =
+          &on_media_session_set_position_state,
+      .prompt_alert = &prompt_alert,
+      .prompt_ok_cancel = &prompt_ok_cancel,
+      .prompt_yes_no = &prompt_yes_no,
+      .prompt_input = &prompt_input,
+      .on_devtools_started = &on_devtools_started,
+      .show_context_menu = &show_context_menu,
+      .on_log_output = &on_log_output,
+  };
 
   capi::register_panic_handler(&on_panic);
 
@@ -319,7 +376,14 @@ void Servo::GoHome() {
   ApplicationDataContainer localSettings =
       ApplicationData::Current().LocalSettings();
   auto prefs = localSettings.Containers().Lookup(L"servoUserPrefs");
-  auto home = unbox_value<hstring>(prefs.Values().Lookup(L"shell.homepage"));
+  auto home_pref = prefs.Values().Lookup(L"shell.homepage");
+  auto home = home_pref ? unbox_value<hstring>(home_pref) :
+#ifdef OVERRIDE_DEFAULT_URL
+                        OVERRIDE_DEFAULT_URL
+#else
+                        FALLBACK_DEFAULT_URL
+#endif
+      ;
   LoadUri(home);
 }
 
@@ -361,9 +425,7 @@ std::vector<Servo::PrefTuple> Servo::GetPrefs() {
     return {};
   }
   auto prefs = capi::get_prefs();
-  std::vector<
-      std::tuple<hstring, winrt::Windows::Foundation::IInspectable, bool>>
-      vec;
+  std::vector<PrefTuple> vec;
   for (auto i = 0; i < prefs.len; i++) {
     auto pref = WrapPref(prefs.list[i]);
     vec.push_back(pref);

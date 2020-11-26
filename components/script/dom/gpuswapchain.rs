@@ -24,13 +24,18 @@ pub struct GPUSwapChain {
 }
 
 impl GPUSwapChain {
-    fn new_inherited(channel: WebGPU, context: &GPUCanvasContext, texture: &GPUTexture) -> Self {
+    fn new_inherited(
+        channel: WebGPU,
+        context: &GPUCanvasContext,
+        texture: &GPUTexture,
+        label: Option<USVString>,
+    ) -> Self {
         Self {
             reflector_: Reflector::new(),
             channel,
             context: Dom::from_ref(context),
             texture: Dom::from_ref(texture),
-            label: DomRefCell::new(None),
+            label: DomRefCell::new(label),
         }
     }
 
@@ -39,9 +44,12 @@ impl GPUSwapChain {
         channel: WebGPU,
         context: &GPUCanvasContext,
         texture: &GPUTexture,
+        label: Option<USVString>,
     ) -> DomRoot<Self> {
         reflect_dom_object(
-            Box::new(GPUSwapChain::new_inherited(channel, context, texture)),
+            Box::new(GPUSwapChain::new_inherited(
+                channel, context, texture, label,
+            )),
             global,
         )
     }
@@ -49,10 +57,13 @@ impl GPUSwapChain {
 
 impl GPUSwapChain {
     pub fn destroy(&self, external_id: u64, image_key: webrender_api::ImageKey) {
-        if let Err(e) = self.channel.0.send(WebGPURequest::DestroySwapChain {
-            external_id,
-            image_key,
-        }) {
+        if let Err(e) = self.channel.0.send((
+            None,
+            WebGPURequest::DestroySwapChain {
+                external_id,
+                image_key,
+            },
+        )) {
             warn!(
                 "Failed to send DestroySwapChain-ImageKey({:?}) ({})",
                 image_key, e
@@ -79,7 +90,6 @@ impl GPUSwapChainMethods for GPUSwapChain {
     /// https://gpuweb.github.io/gpuweb/#dom-gpuswapchain-getcurrenttexture
     fn GetCurrentTexture(&self) -> DomRoot<GPUTexture> {
         self.context.mark_as_dirty();
-        //self.context.send_swap_chain_present();
         DomRoot::from_ref(&*self.texture)
     }
 }

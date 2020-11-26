@@ -510,7 +510,7 @@ class MachCommands(CommandBase):
                 # Follow these instructions to build and deploy new binaries
                 # https://github.com/servo/libgstreamer_android_gen#build
                 print("Downloading GStreamer dependencies")
-                gst_url = "https://servo-deps.s3.amazonaws.com/gstreamer/%s" % gst_lib_zip
+                gst_url = "https://servo-deps-2.s3.amazonaws.com/gstreamer/%s" % gst_lib_zip
                 print(gst_url)
                 urllib.request.urlretrieve(gst_url, gst_lib_zip)
                 zip_ref = zipfile.ZipFile(gst_lib_zip, "r")
@@ -605,7 +605,7 @@ class MachCommands(CommandBase):
 
             # GStreamer configuration
             env.setdefault("GSTREAMER_DIR", path.join(target_path, target, "native", "gstreamer-1.16.0"))
-            env.setdefault("GSTREAMER_URL", "https://servo-deps.s3.amazonaws.com/gstreamer/gstreamer-magicleap-1.16.0-20190823-104505.tgz")
+            env.setdefault("GSTREAMER_URL", "https://servo-deps-2.s3.amazonaws.com/gstreamer/gstreamer-magicleap-1.16.0-20190823-104505.tgz")
             env.setdefault("PKG_CONFIG_PATH", path.join(env["GSTREAMER_DIR"], "system", "lib64", "pkgconfig"))
 
             # Override the linker set in .cargo/config
@@ -655,10 +655,10 @@ class MachCommands(CommandBase):
             env.setdefault("CC", "clang-cl.exe")
             env.setdefault("CXX", "clang-cl.exe")
             if uwp:
-                env.setdefault("CFLAGS", "")
-                env.setdefault("CXXFLAGS", "")
-                env["CFLAGS"] += " -DWINAPI_FAMILY=WINAPI_FAMILY_APP"
-                env["CXXFLAGS"] += " -DWINAPI_FAMILY=WINAPI_FAMILY_APP"
+                env.setdefault("TARGET_CFLAGS", "")
+                env.setdefault("TARGET_CXXFLAGS", "")
+                env["TARGET_CFLAGS"] += " -DWINAPI_FAMILY=WINAPI_FAMILY_APP"
+                env["TARGET_CXXFLAGS"] += " -DWINAPI_FAMILY=WINAPI_FAMILY_APP"
         else:
             env.setdefault("CC", "clang")
             env.setdefault("CXX", "clang++")
@@ -909,6 +909,7 @@ def package_gstreamer_dlls(env, servo_exe_dir, target, uwp):
         # with UWP's restrictions.
         gst_dlls += [
             "graphene-1.0-0.dll",
+            "libcrypto-1_1-x64.dll",
             "libgmp-10.dll",
             "libgnutls-30.dll",
             "libhogweed-4.dll",
@@ -917,10 +918,12 @@ def package_gstreamer_dlls(env, servo_exe_dir, target, uwp):
             "libogg-0.dll",
             "libopus-0.dll",
             "libpng16-16.dll",
+            "libssl-1_1-x64.dll",
             "libtasn1-6.dll",
             "libtheora-0.dll",
             "libtheoradec-1.dll",
             "libtheoraenc-1.dll",
+            "libusrsctp-1.dll",
             "libvorbis-0.dll",
             "libvorbisenc-2.dll",
             "libwinpthread-1.dll",

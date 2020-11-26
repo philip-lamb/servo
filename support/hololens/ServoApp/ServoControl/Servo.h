@@ -28,9 +28,11 @@ class ServoDelegate;
 class Servo {
 public:
   Servo(std::optional<hstring>, hstring, GLsizei, GLsizei, EGLNativeWindowType,
-        float, ServoDelegate &);
+        float, ServoDelegate &, bool);
   ~Servo();
   ServoDelegate &Delegate() { return mDelegate; }
+  hstring CurrentUrl() { return mUrl; }
+  void CurrentUrl(hstring url) { mUrl = url; }
 
   typedef std::tuple<hstring, winrt::Windows::Foundation::IInspectable, bool>
       PrefTuple;
@@ -67,7 +69,10 @@ public:
   void KeyDown(const char *k) { key_down(k); }
   void KeyUp(const char *k) { key_up(k); }
 
-  void Reload() { reload(); }
+  void Reload() {
+    clear_cache();
+    reload();
+  }
   void Stop() { stop(); }
   bool LoadUri(hstring uri) { return load_uri(*hstring2char(uri)); }
   void ChangeVisibility(bool visible) { change_visibility(visible); }
@@ -93,6 +98,7 @@ public:
 
 private:
   ServoDelegate &mDelegate;
+  hstring mUrl;
   GLsizei mWindowWidth;
   GLsizei mWindowHeight;
   static void SaveUserPref(PrefTuple);
@@ -112,11 +118,13 @@ public:
   virtual void OnServoURLChanged(hstring) = 0;
   virtual bool OnServoAllowNavigation(hstring) = 0;
   virtual void OnServoAnimatingChanged(bool) = 0;
+  virtual void OnServoPanic(hstring) = 0;
   virtual void OnServoIMEShow(hstring text, int32_t x, int32_t y, int32_t width,
                               int32_t height) = 0;
   virtual void OnServoIMEHide() = 0;
   virtual void OnServoDevtoolsStarted(bool, const unsigned int, hstring) = 0;
   virtual void OnServoMediaSessionMetadata(hstring, hstring, hstring) = 0;
+  virtual void OnServoMediaSessionPosition(double, double, double) = 0;
   virtual void OnServoMediaSessionPlaybackStateChange(int) = 0;
   virtual void OnServoPromptAlert(hstring, bool) = 0;
   virtual void OnServoShowContextMenu(std::optional<hstring>,

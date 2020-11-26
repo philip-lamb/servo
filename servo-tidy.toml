@@ -31,12 +31,20 @@ rand = [
 packages = [
   "arrayvec",
   "base64",
+  "cfg-if",
+  "cloudabi",
   "cocoa",
+  "fixedbitset",
   "gleam",
   "libloading",
+  "lock_api",
+  "metal",
   "miniz_oxide",
+  "num-rational",
   "parking_lot",
   "parking_lot_core",
+  "petgraph",
+  "ron",
   "wayland-sys",
 
   # https://github.com/servo/servo/issues/26933
@@ -44,7 +52,6 @@ packages = [
   "tokio-openssl",
   "tokio",
   "http",
-  "scoped-tls",
   "bytes",
 
   # https://github.com/servo/servo/pull/23288#issuecomment-494687746
@@ -62,8 +69,14 @@ packages = [
   "core-foundation",
   "core-foundation-sys",
   "core-graphics",
-  "core-text",
   "lyon_geom",
+
+  # Duplicated by webrender debugger via ws
+  "digest",
+  "generic-array",
+  "opaque-debug",
+  "sha-1",
+  "block-buffer",
 ]
 # Files that are ignored for all tidy and lint checks.
 files = [

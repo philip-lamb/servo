@@ -50,7 +50,7 @@
 //! * The font cache, image cache, and resource manager, which load
 //!   and cache shared fonts, images, or other resources.
 //! * The service worker manager.
-//! * The devtools, debugger and webdriver servers.
+//! * The devtools and webdriver servers.
 //!
 //! The constellation passes messages between the threads, and updates its state
 //! to track the evolving state of the browsing context tree.
@@ -112,7 +112,10 @@ use compositing::compositor_thread::Msg as ToCompositorMsg;
 use compositing::compositor_thread::WebrenderMsg;
 use compositing::{ConstellationMsg as FromCompositorMsg, SendableFrameTree};
 use crossbeam_channel::{after, never, unbounded, Receiver, Sender};
-use devtools_traits::{ChromeToDevtoolsControlMsg, DevtoolsControlMsg};
+use devtools_traits::{
+    ChromeToDevtoolsControlMsg, DevtoolsControlMsg, DevtoolsPageInfo, NavigationState,
+    ScriptToDevtoolsControlMsg,
+};
 use embedder_traits::{Cursor, EmbedderMsg, EmbedderProxy, EventLoopWaker};
 use embedder_traits::{MediaSessionEvent, MediaSessionPlaybackState};
 use euclid::{default::Size2D as UntypedSize2D, Size2D};
@@ -357,10 +360,6 @@ pub struct Constellation<Message, LTF, STF, SWF> {
     font_cache_thread: FontCacheThread,
 
     /// A channel for the constellation to send messages to the
-    /// debugger thread.
-    debugger_chan: Option<debugger::Sender>,
-
-    /// A channel for the constellation to send messages to the
     /// devtools thread.
     devtools_chan: Option<Sender<DevtoolsControlMsg>>,
 
@@ -525,9 +524,6 @@ pub struct InitialConstellationState {
 
     /// A channel through which messages can be sent to the compositor.
     pub compositor_proxy: CompositorProxy,
-
-    /// A channel to the debugger, if applicable.
-    pub debugger_chan: Option<debugger::Sender>,
 
     /// A channel to the developer tools, if applicable.
     pub devtools_chan: Option<Sender<DevtoolsControlMsg>>,
@@ -872,7 +868,6 @@ where
                     compositor_proxy: state.compositor_proxy,
                     active_browser_id: None,
                     browsers: HashMap::new(),
-                    debugger_chan: state.debugger_chan,
                     devtools_chan: state.devtools_chan,
                     bluetooth_thread: state.bluetooth_thread,
                     public_resource_threads: state.public_resource_threads,
@@ -1090,9 +1085,12 @@ where
         let (event_loop, host) = match sandbox {
             IFrameSandboxState::IFrameSandboxed => (None, None),
             IFrameSandboxState::IFrameUnsandboxed => {
-                // If this is an about:blank load, it must share the creator's event loop.
-                // This must match the logic in the script thread when determining the proper origin.
-                if load_data.url.as_str() != "about:blank" {
+                // If this is an about:blank or about:srcdoc load, it must share the creator's
+                // event loop. This must match the logic in the script thread when determining
+                // the proper origin.
+                if load_data.url.as_str() != "about:blank" &&
+                    load_data.url.as_str() != "about:srcdoc"
+                {
                     match reg_host(&load_data.url) {
                         None => (None, None),
                         Some(host) => {
@@ -1529,6 +1527,10 @@ where
                     },
                 };
             },
+            FromCompositorMsg::ClearCache => {
+                self.public_resource_threads.clear_cache();
+                self.private_resource_threads.clear_cache();
+            },
             // Load a new page from a typed url
             // If there is already a pending page (self.pending_changes), it will not be overridden;
             // However, if the id is not encompassed by another change, it will be.
@@ -1938,6 +1940,11 @@ where
                 BrowsingContextId::from(source_top_ctx_id),
                 FromScriptMsg::GetWebGPUChan(sender),
             ),
+            FromScriptMsg::TitleChanged(pipeline, title) => {
+                if let Some(pipeline) = self.pipelines.get_mut(&pipeline) {
+                    pipeline.title = title;
+                }
+            },
         }
     }
 
@@ -2165,7 +2172,7 @@ where
                     options,
                     ids,
                 };
-                if webgpu_chan.0.send(adapter_request).is_err() {
+                if webgpu_chan.0.send((None, adapter_request)).is_err() {
                     return warn!("Failed to send request adapter message on WebGPU channel");
                 }
             },
@@ -2733,10 +2740,6 @@ where
             .send(net_traits::CoreResourceMsg::Exit(core_sender))
         {
             warn!("Exit resource thread failed ({})", e);
-        }
-
-        if let Some(ref chan) = self.debugger_chan {
-            debugger::shutdown_server(chan);
         }
 
         if let Some(ref chan) = self.devtools_chan {
@@ -3943,6 +3946,21 @@ where
             old_pipeline.notify_visibility(false);
         }
         if let Some(new_pipeline) = self.pipelines.get(&new_pipeline_id) {
+            if let Some(ref chan) = self.devtools_chan {
+                let state = NavigationState::Start(new_pipeline.url.clone());
+                let _ = chan.send(DevtoolsControlMsg::FromScript(
+                    ScriptToDevtoolsControlMsg::Navigate(browsing_context_id, state),
+                ));
+                let page_info = DevtoolsPageInfo {
+                    title: new_pipeline.title.clone(),
+                    url: new_pipeline.url.clone(),
+                };
+                let state = NavigationState::Stop(new_pipeline.id, page_info);
+                let _ = chan.send(DevtoolsControlMsg::FromScript(
+                    ScriptToDevtoolsControlMsg::Navigate(browsing_context_id, state),
+                ));
+            }
+
             new_pipeline.notify_visibility(true);
         }
 

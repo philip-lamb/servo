@@ -9,11 +9,13 @@ use crate::dom::bindings::codegen::Bindings::EXTTextureFilterAnisotropicBinding:
 use crate::dom::bindings::codegen::Bindings::WebGL2RenderingContextBinding::WebGL2RenderingContextConstants as constants;
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::reflector::{reflect_dom_object, DomObject};
+use crate::dom::bindings::root::Dom;
 use crate::dom::bindings::root::{DomRoot, MutNullableDom};
 use crate::dom::webgl_validations::types::TexImageTarget;
 use crate::dom::webglframebuffer::WebGLFramebuffer;
 use crate::dom::webglobject::WebGLObject;
 use crate::dom::webglrenderingcontext::{Operation, WebGLRenderingContext};
+use crate::dom::xrsession::XRSession;
 use canvas_traits::webgl::{
     webgl_channel, TexDataType, TexFormat, TexParameter, TexParameterBool, TexParameterInt,
     WebGLResult, WebGLTextureId,
@@ -29,6 +31,15 @@ pub enum TexParameterValue {
     Bool(bool),
 }
 
+// Textures generated for WebXR are owned by the WebXR device, not by the WebGL thread
+// so the GL texture should not be deleted when the texture is garbage collected.
+#[unrooted_must_root_lint::must_root]
+#[derive(JSTraceable, MallocSizeOf)]
+enum WebGLTextureOwner {
+    WebGL,
+    WebXR(Dom<XRSession>),
+}
+
 const MAX_LEVEL_COUNT: usize = 31;
 const MAX_FACE_COUNT: usize = 6;
 
@@ -41,6 +52,7 @@ pub struct WebGLTexture {
     /// The target to which this texture was bound the first time
     target: Cell<Option<u32>>,
     is_deleted: Cell<bool>,
+    owner: WebGLTextureOwner,
     /// Stores information about mipmap levels and cubemap faces.
     #[ignore_malloc_size_of = "Arrays are cumbersome"]
     image_info_array: DomRefCell<[Option<ImageInfo>; MAX_LEVEL_COUNT * MAX_FACE_COUNT]>,
@@ -59,12 +71,19 @@ pub struct WebGLTexture {
 }
 
 impl WebGLTexture {
-    fn new_inherited(context: &WebGLRenderingContext, id: WebGLTextureId) -> Self {
+    fn new_inherited(
+        context: &WebGLRenderingContext,
+        id: WebGLTextureId,
+        owner: Option<&XRSession>,
+    ) -> Self {
         Self {
             webgl_object: WebGLObject::new_inherited(context),
             id: id,
             target: Cell::new(None),
             is_deleted: Cell::new(false),
+            owner: owner
+                .map(|session| WebGLTextureOwner::WebXR(Dom::from_ref(session)))
+                .unwrap_or(WebGLTextureOwner::WebGL),
             immutable_levels: Cell::new(None),
             face_count: Cell::new(0),
             base_mipmap_level: 0,
@@ -87,7 +106,18 @@ impl WebGLTexture {
 
     pub fn new(context: &WebGLRenderingContext, id: WebGLTextureId) -> DomRoot<Self> {
         reflect_dom_object(
-            Box::new(WebGLTexture::new_inherited(context, id)),
+            Box::new(WebGLTexture::new_inherited(context, id, None)),
+            &*context.global(),
+        )
+    }
+
+    pub fn new_webxr(
+        context: &WebGLRenderingContext,
+        id: WebGLTextureId,
+        session: &XRSession,
+    ) -> DomRoot<Self> {
+        reflect_dom_object(
+            Box::new(WebGLTexture::new_inherited(context, id, Some(session))),
             &*context.global(),
         )
     }
@@ -100,7 +130,7 @@ impl WebGLTexture {
 
     // NB: Only valid texture targets come here
     pub fn bind(&self, target: u32) -> WebGLResult<()> {
-        if self.is_deleted.get() {
+        if self.is_invalid() {
             return Err(WebGLError::InvalidOperation);
         }
 
@@ -216,6 +246,11 @@ impl WebGLTexture {
                 let _ = fb.detach_texture(self);
             }
 
+            // We don't delete textures owned by WebXR
+            if let WebGLTextureOwner::WebXR(_) = self.owner {
+                return;
+            }
+
             let cmd = WebGLCommand::DeleteTexture(self.id);
             match operation_fallibility {
                 Operation::Fallible => context.send_command_ignored(cmd),
@@ -224,7 +259,13 @@ impl WebGLTexture {
         }
     }
 
-    pub fn is_deleted(&self) -> bool {
+    pub fn is_invalid(&self) -> bool {
+        // https://immersive-web.github.io/layers/#xrwebglsubimagetype
+        if let WebGLTextureOwner::WebXR(ref session) = self.owner {
+            if session.is_outside_raf() {
+                return true;
+            }
+        }
         self.is_deleted.get()
     }
 
