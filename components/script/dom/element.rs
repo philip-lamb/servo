@@ -2988,16 +2988,16 @@ impl VirtualMethods for Element {
 
         self.update_sequentially_focusable_status();
 
-        if let Some(ref value) = *self.id_attribute.borrow() {
+        if let Some(ref id) = *self.id_attribute.borrow() {
             if let Some(shadow_root) = self.upcast::<Node>().containing_shadow_root() {
-                shadow_root.register_element_id(self, value.clone());
+                shadow_root.register_element_id(self, id.clone());
             } else {
-                doc.register_element_id(self, value.clone());
+                doc.register_element_id(self, id.clone());
             }
         }
-        if let Some(ref value) = self.name_attribute() {
+        if let Some(ref name) = self.name_attribute() {
             if self.upcast::<Node>().containing_shadow_root().is_none() {
-                doc.register_element_name(self, value.clone());
+                doc.register_element_name(self, name.clone());
             }
         }
 
@@ -3771,6 +3771,27 @@ pub fn set_cross_origin_attribute(element: &Element, value: Option<DOMString>) {
             element.remove_attribute(&ns!(), &local_name!("crossorigin"));
         },
     }
+}
+
+pub fn reflect_referrer_policy_attribute(element: &Element) -> DOMString {
+    let attr =
+        element.get_attribute_by_name(DOMString::from_string(String::from("referrerpolicy")));
+
+    if let Some(mut val) = attr.map(|v| v.Value()) {
+        val.make_ascii_lowercase();
+        if val == "no-referrer" ||
+            val == "no-referrer-when-downgrade" ||
+            val == "same-origin" ||
+            val == "origin" ||
+            val == "strict-origin" ||
+            val == "origin-when-cross-origin" ||
+            val == "strict-origin-when-cross-origin" ||
+            val == "unsafe-url"
+        {
+            return val;
+        }
+    }
+    return DOMString::new();
 }
 
 pub(crate) fn referrer_policy_for_element(element: &Element) -> Option<ReferrerPolicy> {

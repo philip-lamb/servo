@@ -34,10 +34,17 @@ packages = [
   "cfg-if",
   "cloudabi",
   "cocoa",
+  "crossbeam-channel",
+  "crossbeam-deque",
+  "crossbeam-epoch",
+  "crossbeam-utils",
+  "env_logger",
   "fixedbitset",
   "gleam",
+  "humantime",
   "libloading",
   "lock_api",
+  "memoffset",
   "metal",
   "miniz_oxide",
   "num-rational",
@@ -77,6 +84,10 @@ packages = [
   "opaque-debug",
   "sha-1",
   "block-buffer",
+
+  # Duplicated by futures
+  "pin-project",
+  "pin-project-internal",
 ]
 # Files that are ignored for all tidy and lint checks.
 files = [
