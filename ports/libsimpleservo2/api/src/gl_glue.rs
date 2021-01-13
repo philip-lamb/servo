@@ -12,6 +12,13 @@ pub mod egl {
     use servo::gl::GlesFns;
     use std::ffi::CString;
     use std::os::raw::c_void;
+    #[cfg(all(target_os = "windows", feature = "uwp"))]
+    use winapi::shared::minwindef::HMODULE;
+    #[cfg(all(target_os = "windows", feature = "uwp"))]
+    use winapi::shared::ntdef::LPCSTR;
+    #[cfg(all(target_os = "windows", feature = "uwp"))]
+    use winapi::um::libloaderapi;
+
 
     pub type EGLNativeWindowType = *const libc::c_void;
     pub type khronos_utime_nanoseconds_t = khronos_uint64_t;
@@ -33,22 +40,39 @@ pub mod egl {
         pub display: EGLNativeDisplayType,
     }
 
+    #[cfg(all(target_os = "windows", feature = "uwp"))]
+    thread_local! {
+        static EGL_LIBRARY: HMODULE = {
+            unsafe {
+                libloaderapi::LoadLibraryA(&b"libEGL.dll\0"[0] as *const u8 as LPCSTR)
+            }
+        };
+    }
+
     pub fn init() -> Result<EGLInitResult, &'static str> {
         info!("Loading EGL...");
         unsafe {
+            #[cfg(not(all(target_os = "windows", feature = "uwp")))]
             let egl = Egl;
+            #[cfg(all(target_os = "windows", feature = "uwp"))]
+            let egl = Egl::load_with(|symbol_name: &str| -> *const c_void {
+                let symbol_name: CString = CString::new(symbol_name).unwrap();
+                let symbol_ptr = symbol_name.as_ptr() as *const u8 as LPCSTR;
+                EGL_LIBRARY.with(|egl_library| {
+                    libloaderapi::GetProcAddress(*egl_library, symbol_ptr) as *const c_void
+                })
+            });
             let display = egl.GetCurrentDisplay();
             egl.SwapInterval(display, 1);
-            let egl = GlesFns::load_with(|addr| {
+            let gl = GlesFns::load_with(|addr| {
                 let addr = CString::new(addr.as_bytes()).unwrap();
                 let addr = addr.as_ptr();
-                let egl = Egl;
                 egl.GetProcAddress(addr) as *const c_void
             });
             info!("EGL loaded");
             Ok(EGLInitResult {
-                gl_wrapper: egl,
-                gl_context: Egl.GetCurrentContext(),
+                gl_wrapper: gl,
+                gl_context: egl.GetCurrentContext(),
                 display,
             })
         }
