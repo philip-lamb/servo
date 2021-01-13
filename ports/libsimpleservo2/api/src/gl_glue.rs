@@ -55,7 +55,7 @@ pub mod egl {
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", not(feature = "no-wgl")))]
 pub mod gl {
     use servo::gl::GlFns;
     use std::ffi::CString;

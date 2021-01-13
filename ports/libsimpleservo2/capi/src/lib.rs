@@ -381,6 +381,8 @@ fn init_logger(_modules: &[*const c_char], _level: LevelFilter) {
 unsafe fn init(
     opts: CInitOptions,
     gl: gl_glue::ServoGl,
+    gl_context: Option<*const c_void>,
+    display: Option<*const c_void>,
     wakeup: extern "C" fn(),
     callbacks: CHostCallbacks,
 ) {
@@ -458,6 +460,8 @@ unsafe fn init(
         prefs,
         density: opts.density,
         xr_discovery: None,
+        gl_context_pointer: gl_context,
+        native_display_pointer: display,
      };
 
     let wakeup = Box::new(WakeupCallback::new(wakeup));
@@ -478,15 +482,15 @@ pub extern "C" fn init_with_egl(
         init(
             opts,
             gl.gl_wrapper,
-            //Some(gl.gl_context),
-            //Some(gl.display),
+            Some(gl.gl_context),
+            Some(gl.display),
             wakeup,
             callbacks,
         )
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+#[cfg(any(target_os = "linux", all(target_os = "windows", not(feature = "no-wgl")), target_os = "macos"))]
 #[no_mangle]
 pub extern "C" fn init_with_gl(
     opts: CInitOptions,
@@ -494,7 +498,7 @@ pub extern "C" fn init_with_gl(
     callbacks: CHostCallbacks,
 ) {
     let gl = gl_glue::gl::init().unwrap();
-    unsafe { init(opts, gl, wakeup, callbacks) }
+    unsafe { init(opts, gl, None, None, wakeup, callbacks) }
 }
 
 #[no_mangle]

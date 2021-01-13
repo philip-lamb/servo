@@ -5926,7 +5926,7 @@ version = "0.0.1"
 dependencies = [
  "backtrace",
  "cbindgen",
- "env_logger 0.7.1",
+ "env_logger 0.8.2",
  "keyboard-types",
  "lazy_static",
  "libc",

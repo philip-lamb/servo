@@ -14,7 +14,7 @@ bench = false
 
 [dependencies]
 backtrace = "0.3"
-env_logger = "0.7"
+env_logger = "0.8"
 lazy_static = "1"
 log = "0.4"
 simpleservo2 = { path = "../api" }
@@ -30,7 +30,7 @@ cbindgen = "0.14"
 
 [features]
 debugmozjs = ["simpleservo2/debugmozjs"]
-default = ["webdriver", "max_log_level"]
+default = ["webdriver", "max_log_level", "no-wgl"]
 egl = ["simpleservo2/egl"]
 googlevr = ["simpleservo2/googlevr"]
 jitspew = ["simpleservo2/jitspew"]

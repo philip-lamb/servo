@@ -36,7 +36,7 @@ serde_json = "1.0"
 
 [features]
 debugmozjs = ["libservo/debugmozjs"]
-default = ["webdriver", "max_log_level"]
+default = ["webdriver", "max_log_level", "no-wgl"]
 egl = ["libservo/egl"]
 googlevr = ["libservo/googlevr"]
 jitspew = ["libservo/jitspew"]

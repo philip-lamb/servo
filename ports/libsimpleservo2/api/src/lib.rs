@@ -41,6 +41,7 @@ use servo_media::player::context as MediaPlayerContext;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::mem;
+use std::os::raw::c_void;
 use std::path::PathBuf;
 use std::rc::Rc;
 use surfman::Connection;
@@ -63,6 +64,8 @@ pub struct InitOptions {
     pub coordinates: Coordinates,
     pub density: f32,
     pub xr_discovery: Option<webxr::Discovery>,
+    pub gl_context_pointer: Option<*const c_void>,
+    pub native_display_pointer: Option<*const c_void>,
     pub prefs: Option<HashMap<String, PrefValue>>,
 }
 
@@ -329,6 +332,8 @@ pub fn init(
         host_callbacks: callbacks,
         coordinates: RefCell::new(init_opts.coordinates),
         density: init_opts.density,
+        gl_context_pointer: init_opts.gl_context_pointer,
+        native_display_pointer: init_opts.native_display_pointer,
         webrender_surfman,
     });
 
@@ -971,6 +976,8 @@ struct ServoWindowCallbacks {
     host_callbacks: Box<dyn HostTrait>,
     coordinates: RefCell<Coordinates>,
     density: f32,
+    gl_context_pointer: Option<*const c_void>,
+    native_display_pointer: Option<*const c_void>,
     webrender_surfman: WebrenderSurfman,
 }
 
@@ -1089,26 +1096,24 @@ impl WindowMethods for ServoWindowCallbacks {
     }
 
     fn get_gl_context(&self) -> MediaPlayerContext::GlContext {
-        MediaPlayerContext::GlContext::Unknown
-        //match self.gl_context_pointer {
-        //    Some(context) => MediaPlayerContext::GlContext::Egl(context as usize),
-        //    None => MediaPlayerContext::GlContext::Unknown,
-        //}
+        match self.gl_context_pointer {
+            Some(context) => MediaPlayerContext::GlContext::Egl(context as usize),
+            None => MediaPlayerContext::GlContext::Unknown,
+        }
     }
 
     fn get_native_display(&self) -> MediaPlayerContext::NativeDisplay {
-        MediaPlayerContext::NativeDisplay::Unknown
-        //MediaPlayerContext::NativeDisplay::Headless
-        //match self.native_display_pointer {
-        //    Some(display) => MediaPlayerContext::NativeDisplay::Egl(display as usize),
-        //    None => MediaPlayerContext::NativeDisplay::Unknown,
-        //}
+        match self.native_display_pointer {
+            Some(display) => MediaPlayerContext::NativeDisplay::Egl(display as usize),
+            None => MediaPlayerContext::NativeDisplay::Unknown, // also available: MediaPlayerContext::NativeDisplay::Headless
+        }
     }
 
     fn get_gl_api(&self) -> MediaPlayerContext::GlApi {
-        MediaPlayerContext::GlApi::None
-        //MediaPlayerContext::GlApi::Gl3
-        //MediaPlayerContext::GlApi::Gles2
+        match self.gl_context_pointer {
+            Some(_context) => MediaPlayerContext::GlApi::Gles2,
+            None => MediaPlayerContext::GlApi::None,
+        }
     }
 }
 
