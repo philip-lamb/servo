@@ -16,15 +16,9 @@ fn main() {
     // For now, we only support EGL, and only on Windows and Android.
     if target.contains("android") || target.contains("windows") {
         let mut file = File::create(&dest.join("egl_bindings.rs")).unwrap();
-        if target.contains("windows") && cfg!(feature = "uwp") {
-            Registry::new(Api::Egl, (1, 5), Profile::Core, Fallbacks::All, [])
-            .write_bindings(gl_generator::StructGenerator, &mut file)
-            .unwrap();
-        } else {
-            Registry::new(Api::Egl, (1, 5), Profile::Core, Fallbacks::All, [])
+        Registry::new(Api::Egl, (1, 5), Profile::Core, Fallbacks::All, [])
             .write_bindings(gl_generator::StaticStructGenerator, &mut file)
             .unwrap();
-        };
 
         // Historically, Android builds have succeeded with rust-link-lib=EGL.
         // On Windows when relying on %LIBS% to contain libEGL.lib, however,
