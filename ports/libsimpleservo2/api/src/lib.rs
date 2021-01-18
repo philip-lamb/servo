@@ -267,19 +267,27 @@ pub fn init(
     gl.clear_color(1.0, 1.0, 1.0, 1.0);
     gl.clear(gl::COLOR_BUFFER_BIT);
     gl.finish();
-    //let v = gl.get_string(gl::VERSION);
-    //error!("gl_version {}", v);
+    let v = gl.get_string(gl::VERSION);
+    info!("gl_version {}", v);
 
     // These need to be on the destination context.
     let draw_fbo = gl.gen_framebuffers(1)[0];
     let read_fbo = gl.gen_framebuffers(1)[0];
 
-    // Initialize surfman
-    // If we create a connection using Connection::new(), it will allocate a new
-    // GL context, but we need a connection that is based on the current GL context,
-    // so we work backwards from the current native context via a NativeConnection, and
-    // from that back to a Connection, and from that to a Context.
+    // Initialize surfman.
+    //
+    // If we create a new Connection, Adapter, and Device, a new GL context will be
+    // created, but we want to keep the current GL context and associate it with an
+    // existing Connection, Adapter, and Device.
+    // On Linux & Mac, using Connection::new() triggers context creation, so instead
+    // we work backwards via a NativeConnection, and from that back to a Connection.
+    // From there we can safely get the Adapter and Device.
+    // On Windows, things must be done in a different order. Connection is empty, so
+    // that is safe to creat, and then we can work backwards, creating a Device to
+    // represent the EGL display, and then query the Device for it's associated Adapter.
     let connection;
+    let adapter;
+    let device;
     #[cfg(not(target_os = "windows"))]
     {
         use surfman::connection::Connection as ConnectionAPI;
@@ -288,21 +296,26 @@ pub fn init(
             NativeConnection::current().expect("Failed to bootstrap native connection");
         connection = unsafe { Connection::from_native_connection(native_connection) }
             .expect("Failed to bootstrap surfman connection");
+        adapter = connection
+            .create_adapter()
+            .expect("Failed to bootstrap surfman adapter");
+        device = connection
+            .create_device(&adapter)
+            .expect("Failed to bootstrap surfman device");
     }
-
     #[cfg(target_os = "windows")]
     {
         connection = Connection::new().expect("Failed to create connection");
+        let egl_display = init_opts
+            .native_display_pointer
+            .expect("No EGLDisplay provided");
+        device = unsafe { connection.create_device_from_egl_display(egl_display) }
+            .expect("Failed to bootstrap surfman device");
+        adapter = device.adapter();
     }
 
-    let adapter = connection
-        .create_adapter()
-        .expect("Failed to bootstrap surfman adapter");
-
-    let device = connection
-        .create_device(&adapter)
-        .expect("Failed to bootstrap surfman device");
-
+    // With the Connection, Adapter, and Device in place, we can get the NativeContext
+    // and then wrap it in a Context.
     let native_context = {
         use surfman::device::Device as DeviceAPI;
         type NativeContext = <Device as DeviceAPI>::NativeContext;
