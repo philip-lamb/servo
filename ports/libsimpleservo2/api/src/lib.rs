@@ -853,7 +853,7 @@ impl ServoGlue {
         Ok(())
     }
 
-    pub fn fill_gl_texture(&mut self, tex_id: u32, tex_width: i32, tex_height: i32) -> Result<(), &'static str> {
+    pub fn fill_gl_texture(&mut self, tex_id: u32, tex_width: i32, tex_height: i32) -> Result<bool, &'static str> {
         debug!("Filling texture {} {}x{}", tex_id, tex_width, tex_height);
 
         self.gfx.device
@@ -861,30 +861,8 @@ impl ServoGlue {
             .expect("Failed to make surfman context current");
         debug_assert_eq!(self.gfx.gl.get_error(), gl::NO_ERROR);
 
-        // Save the current GL state
-        debug!("Saving GL FBO state");
-        let mut bound_fbos = [0, 0];
-        unsafe {
-            self.gfx.gl.get_integer_v(gl::DRAW_FRAMEBUFFER_BINDING, &mut bound_fbos[0..]);
-            self.gfx.gl.get_integer_v(gl::READ_FRAMEBUFFER_BINDING, &mut bound_fbos[1..]);
-        }
-
-        self.gfx.gl.bind_framebuffer(gl::FRAMEBUFFER, self.gfx.draw_fbo);
-        self.gfx.gl.framebuffer_texture_2d(
-            gl::FRAMEBUFFER,
-            gl::COLOR_ATTACHMENT0,
-            gl::TEXTURE_2D,
-            tex_id,
-            0,
-        );
-        debug_assert_eq!(self.gfx.gl.get_error(), gl::NO_ERROR);
-
-        self.gfx.gl.clear_color(1.0, 1.0, 1.0, 1.0);
-        self.gfx.gl.clear(gl::COLOR_BUFFER_BIT);
-        debug_assert_eq!(self.gfx.gl.get_error(), gl::NO_ERROR);
-
         if let Some(surface) = self.callbacks.webrender_surfman.swap_chain().unwrap().take_surface() {
-            debug!("Rendering surface");
+        //if let Some(surface) = self.callbacks.webrender_surfman.swap_chain().unwrap().take_pending_surface() {
             let tex_size = Size2D::new(tex_width, tex_height);
             let surface_size = Size2D::from_untyped(self.callbacks.webrender_surfman.surface_info(&surface).size);
             if tex_size != surface_size {
@@ -894,22 +872,47 @@ impl ServoGlue {
             }
 
             if tex_size.width <= 0 || tex_size.height <= 0 {
-                info!("Surface is zero-sized");
+                error!("Surface is zero-sized");
                 self.callbacks.webrender_surfman
                     .swap_chain().unwrap().recycle_surface(surface);
                 return Err("Surface is zero-sized");
             }
 
+            // Save the current GL state
+            let mut bound_fbos = [0, 0];
+            unsafe {
+                self.gfx.gl.get_integer_v(gl::DRAW_FRAMEBUFFER_BINDING, &mut bound_fbos[0..]);
+                self.gfx.gl.get_integer_v(gl::READ_FRAMEBUFFER_BINDING, &mut bound_fbos[1..]);
+            }
+
+            self.gfx.gl.bind_framebuffer(gl::FRAMEBUFFER, self.gfx.draw_fbo);
+            self.gfx.gl.framebuffer_texture_2d(
+                gl::FRAMEBUFFER,
+                gl::COLOR_ATTACHMENT0,
+                gl::TEXTURE_2D,
+                tex_id,
+                0,
+            );
+            debug_assert_eq!(
+                (
+                    self.gfx.gl.check_frame_buffer_status(gl::DRAW_FRAMEBUFFER),
+                    self.gfx.gl.get_error()
+                ),
+                (gl::FRAMEBUFFER_COMPLETE, gl::NO_ERROR)
+            );
+
+            self.gfx.gl.clear_color(1.0, 0.0, 0.0, 1.0);
+            self.gfx.gl.clear(gl::COLOR_BUFFER_BIT);
+            debug_assert_eq!(self.gfx.gl.get_error(), gl::NO_ERROR);
+
+            // Create a SurfaceTexture, which binds the surface to a texture on the current
+            // thread and GL context, then bind that texture as the source for a framebuffer read.
             let surface_texture = self.gfx.device
                 .create_surface_texture(&mut self.gfx.context.as_mut().unwrap(), surface)
                 .unwrap();
             let read_texture_id = self.gfx.device.surface_texture_object(&surface_texture);
             let read_texture_target = self.gfx.device.surface_gl_texture_target();
 
-            debug!(
-                "Filling with {}/{} {}",
-                read_texture_id, read_texture_target, surface_size
-            );
             self.gfx.gl.bind_framebuffer(gl::READ_FRAMEBUFFER, self.gfx.read_fbo);
             self.gfx.gl.framebuffer_texture_2d(
                 gl::READ_FRAMEBUFFER,
@@ -918,28 +921,19 @@ impl ServoGlue {
                 read_texture_id,
                 0,
             );
-            self.gfx.gl.bind_framebuffer(gl::DRAW_FRAMEBUFFER, self.gfx.draw_fbo);
-            self.gfx.gl.framebuffer_texture_2d(
-                gl::DRAW_FRAMEBUFFER,
-                gl::COLOR_ATTACHMENT0,
-                gl::TEXTURE_2D,
-                tex_id,
-                0,
-            );
             debug_assert_eq!(
                 (
                     self.gfx.gl.check_frame_buffer_status(gl::READ_FRAMEBUFFER),
-                    self.gfx.gl.check_frame_buffer_status(gl::DRAW_FRAMEBUFFER),
                     self.gfx.gl.get_error()
                 ),
-                (
-                    gl::FRAMEBUFFER_COMPLETE,
-                    gl::FRAMEBUFFER_COMPLETE,
-                    gl::NO_ERROR
-                )
+                (gl::FRAMEBUFFER_COMPLETE, gl::NO_ERROR)
             );
 
-            debug!("Blitting");
+            // Do the framebuffer copy.
+            debug!(
+                "fill_gl_texture: Blitting {} of size {} from texture ID {} to ID {}.",
+                read_texture_target, tex_size, read_texture_id, tex_id
+            );
             self.gfx.gl.blit_framebuffer(
                 0,
                 0,
@@ -963,18 +957,19 @@ impl ServoGlue {
             let surface = self.gfx.device
                 .destroy_surface_texture(&mut self.gfx.context.as_mut().unwrap(), surface_texture)
                 .unwrap();
+
+            // Restore the GL state
+            self.gfx.gl.bind_framebuffer(gl::DRAW_FRAMEBUFFER, bound_fbos[0] as gl::GLuint);
+            self.gfx.gl.bind_framebuffer(gl::READ_FRAMEBUFFER, bound_fbos[1] as gl::GLuint);
+            debug_assert_eq!(self.gfx.gl.get_error(), gl::NO_ERROR);
+
             self.callbacks.webrender_surfman
                 .swap_chain().unwrap().recycle_surface(surface);
+            Ok(true)
         } else {
-            debug!("Failed to get current surface");
+            debug!("fill_gl_texture: no surface pendng.");
+            Ok(false)
         }
-
-        // Restore the GL state
-        self.gfx.gl.bind_framebuffer(gl::DRAW_FRAMEBUFFER, bound_fbos[0] as gl::GLuint);
-        self.gfx.gl.bind_framebuffer(gl::READ_FRAMEBUFFER, bound_fbos[1] as gl::GLuint);
-        debug_assert_eq!(self.gfx.gl.get_error(), gl::NO_ERROR);
-
-        Ok(())
     }
 }
 

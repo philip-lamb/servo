@@ -1,4 +1,5 @@
-@ECHO OFF
+@echo off
+SETLOCAL EnableDelayedExpansion
 
 SET CONFIG=release
 SET VS_VERSION=2019

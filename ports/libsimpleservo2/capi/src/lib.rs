@@ -809,10 +809,14 @@ pub extern "C" fn ime_dismissed() {
     call(|s| s.ime_dismissed());
 }
 
+/// Fill GL texture with ID `tex_id` with the latest WebRender output.
+/// If no new output is available, leaves the texture untouched.
+/// In either case, the GL context active when `init_with_gl` or
+/// `init_with_egl` was called will be active when this function returns.
 #[no_mangle]
-pub extern "C" fn fill_gl_texture(tex_id: u32, tex_width: i32, tex_height: i32) {
+pub extern "C" fn fill_gl_texture(tex_id: u32, tex_width: i32, tex_height: i32) -> bool {
     debug!("fill_gl_texture");
-    call(|s| s.fill_gl_texture(tex_id, tex_width, tex_height));
+    call(|s| s.fill_gl_texture(tex_id, tex_width, tex_height))
 }
 
 pub struct WakeupCallback(extern "C" fn());
