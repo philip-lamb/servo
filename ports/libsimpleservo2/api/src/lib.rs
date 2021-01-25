@@ -861,8 +861,7 @@ impl ServoGlue {
             .expect("Failed to make surfman context current");
         debug_assert_eq!(self.gfx.gl.get_error(), gl::NO_ERROR);
 
-        if let Some(surface) = self.callbacks.webrender_surfman.swap_chain().unwrap().take_surface() {
-        //if let Some(surface) = self.callbacks.webrender_surfman.swap_chain().unwrap().take_pending_surface() {
+        if let Some(surface) = self.callbacks.webrender_surfman.swap_chain().unwrap().take_pending_surface() {
             let tex_size = Size2D::new(tex_width, tex_height);
             let surface_size = Size2D::from_untyped(self.callbacks.webrender_surfman.surface_info(&surface).size);
             if tex_size != surface_size {
@@ -900,10 +899,6 @@ impl ServoGlue {
                 ),
                 (gl::FRAMEBUFFER_COMPLETE, gl::NO_ERROR)
             );
-
-            self.gfx.gl.clear_color(1.0, 0.0, 0.0, 1.0);
-            self.gfx.gl.clear(gl::COLOR_BUFFER_BIT);
-            debug_assert_eq!(self.gfx.gl.get_error(), gl::NO_ERROR);
 
             // Create a SurfaceTexture, which binds the surface to a texture on the current
             // thread and GL context, then bind that texture as the source for a framebuffer read.
@@ -953,6 +948,9 @@ impl ServoGlue {
                 ),
                 (gl::FRAMEBUFFER_COMPLETE, gl::NO_ERROR)
             );
+
+            // Do we need to do a self.gfx.gl.finish() here instead?
+            self.gfx.gl.flush();
 
             let surface = self.gfx.device
                 .destroy_surface_texture(&mut self.gfx.context.as_mut().unwrap(), surface_texture)
