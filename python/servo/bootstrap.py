@@ -333,7 +333,7 @@ def get_linux_distribution():
     distrib = six.ensure_str(distrib)
     version = six.ensure_str(version)
 
-    if distrib == 'LinuxMint' or distrib == 'Linux Mint':
+    if distrib in ['LinuxMint', 'Linux Mint', 'KDE neon']:
         if '.' in version:
             major, _ = version.split('.', 1)
         else:
@@ -374,7 +374,7 @@ def get_linux_distribution():
             raise Exception('unsupported version of %s: %s' % (distrib, version))
         distrib, version = 'Ubuntu', base_version
     elif distrib.lower() == 'ubuntu':
-        if version > '20.04':
+        if version > '20.10':
             raise Exception('unsupported version of %s: %s' % (distrib, version))
     # Fixme: we should allow checked/supported versions only
     elif distrib.lower() not in [

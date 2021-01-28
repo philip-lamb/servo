@@ -3,6 +3,7 @@ from __future__ import print_function, unicode_literals
 import json
 import os
 import sys
+
 from six import iteritems, itervalues
 
 import wptserve
@@ -10,6 +11,7 @@ from wptserve import sslutils
 
 from . import environment as env
 from . import instruments
+from . import mpcontext
 from . import products
 from . import testloader
 from . import wptcommandline
@@ -139,6 +141,8 @@ def get_pause_after_test(test_loader, **kwargs):
             return False
         if kwargs["headless"]:
             return False
+        if kwargs["debug_test"]:
+            return True
         tests = test_loader.tests
         is_single_testharness = (sum(len(item) for item in itervalues(tests)) == 1 and
                                  len(tests.get("testharness", [])) == 1)
@@ -151,11 +155,14 @@ def get_pause_after_test(test_loader, **kwargs):
 def run_tests(config, test_paths, product, **kwargs):
     """Set up the test environment, load the list of tests to be executed, and
     invoke the remainder of the code to execute tests"""
+    mp = mpcontext.get_context()
     if kwargs["instrument_to_file"] is None:
         recorder = instruments.NullInstrument()
     else:
         recorder = instruments.Instrument(kwargs["instrument_to_file"])
-    with recorder as recording, capture.CaptureIO(logger, not kwargs["no_capture_stdio"]):
+    with recorder as recording, capture.CaptureIO(logger,
+                                                  not kwargs["no_capture_stdio"],
+                                                  mp_context=mp):
         recording.set(["startup"])
         env.do_delayed_imports(logger, test_paths)
 
@@ -219,6 +226,7 @@ def run_tests(config, test_paths, product, **kwargs):
         with env.TestEnvironment(test_paths,
                                  testharness_timeout_multipler,
                                  kwargs["pause_after_test"],
+                                 kwargs["debug_test"],
                                  kwargs["debug_info"],
                                  product.env_options,
                                  ssl_config,
@@ -275,13 +283,16 @@ def run_tests(config, test_paths, product, **kwargs):
                     else:
                         browser_cls = product.browser_cls
 
-                    browser_kwargs = product.get_browser_kwargs(test_type,
+                    browser_kwargs = product.get_browser_kwargs(logger,
+                                                                test_type,
                                                                 run_info,
                                                                 config=test_environment.config,
+                                                                num_test_groups=len(test_groups),
                                                                 **kwargs)
 
                     executor_cls = product.executor_classes.get(test_type)
-                    executor_kwargs = product.get_executor_kwargs(test_type,
+                    executor_kwargs = product.get_executor_kwargs(logger,
+                                                                  test_type,
                                                                   test_environment.config,
                                                                   test_environment.cache_manager,
                                                                   run_info,
