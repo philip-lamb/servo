@@ -35,6 +35,7 @@ IF NOT "%1"=="" (
     IF "%1"=="-h" (
         GOTO :usage
     )
+    GOTO :loop
 )
 
 IF "%CONFIG%"=="release" (
