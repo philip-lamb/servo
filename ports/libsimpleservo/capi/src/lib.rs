@@ -803,13 +803,13 @@ impl HostTrait for HostCallbacks {
     fn on_ime_show(
         &self,
         _input_type: InputMethodType,
-        text: Option<String>,
+        text: Option<(String, i32)>,
         multiline: bool,
         bounds: DeviceIntRect,
     ) {
         debug!("on_ime_show");
-        let (text, text_index, multiline) = text.unwrap_or((None, 0, false));
-        let text = text.and_then(|s| CString::new(s).ok());
+        let text_index = text.as_ref().map_or(0, |(_, i)| *i);
+        let text = text.and_then(|(s, _)| CString::new(s).ok());
         let text_ptr = text
             .as_ref()
             .map(|cstr| cstr.as_ptr())

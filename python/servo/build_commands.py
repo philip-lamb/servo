@@ -277,7 +277,7 @@ class MachCommands(CommandBase):
             check_call(["rustup", "component", "add", "rust-src"])
 
             # Don't try and build a desktop port.
-            libsimpleservo = True
+            libsimpleservo2 = True
 
             arches = {
                 "aarch64": {

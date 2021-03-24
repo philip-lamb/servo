@@ -5854,6 +5854,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "simpleservo2"
+version = "0.0.1"
+dependencies = [
+ "core-foundation 0.6.4",
+ "getopts",
+ "gl_generator 0.14.0",
+ "ipc-channel",
+ "libc",
+ "libloading 0.5.2",
+ "libservo",
+ "log",
+ "serde_json",
+ "servo-media",
+ "surfman",
+ "surfman-chains",
+ "surfman-chains-api",
+ "webxr",
+ "webxr-api",
+ "winapi",
+]
+
+[[package]]
+name = "simpleservo2_capi"
+version = "0.0.1"
+dependencies = [
+ "backtrace",
+ "cbindgen",
+ "env_logger 0.8.2",
+ "keyboard-types",
+ "lazy_static",
+ "libc",
+ "log",
+ "simpleservo2",
+ "surfman",
+ "winapi",
+]
+
+[[package]]
 name = "simpleservo_capi"
 version = "0.0.1"
 dependencies = [

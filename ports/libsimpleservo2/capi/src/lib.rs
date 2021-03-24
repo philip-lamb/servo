@@ -187,7 +187,7 @@ where
         Some(ref mut s) => (f)(s),
         None => Err("Servo not available in this thread"),
     }) {
-        Err(e) => panic!(e),
+        Err(e) => panic!("{}", e),
         Ok(r) => r,
     }
 }
@@ -897,13 +897,13 @@ impl HostTrait for HostCallbacks {
     fn on_ime_show(
         &self,
         _input_type: InputMethodType,
-        text: Option<(String, i32, bool)>,
+        text: Option<(String, i32)>,
         multiline: bool,
         bounds: DeviceIntRect,
     ) {
         debug!("on_ime_show");
-        let (text, text_index) = text.unwrap_or((None, 0));
-        let text = text.and_then(|s| CString::new(s).ok());
+        let text_index = text.as_ref().map_or(0, |(_, i)| *i);
+        let text = text.and_then(|(s, _)| CString::new(s).ok());
         let text_ptr = text
             .as_ref()
             .map(|cstr| cstr.as_ptr())
@@ -911,7 +911,7 @@ impl HostTrait for HostCallbacks {
         (self.0.on_ime_show)(
             text_ptr,
             text_index,
-            multiline
+            multiline,
             bounds.origin.x,
             bounds.origin.y,
             bounds.size.width,

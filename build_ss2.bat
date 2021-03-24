@@ -48,13 +48,13 @@ IF NOT "%TARGET%"=="arm64" (
     IF "%VSCMD_VER%" EQU "" (
         CALL "%programfiles(x86)%\Microsoft Visual Studio\%VS_VERSION%\%VS_EDITION%\VC\Auxiliary\Build\vcvarsall.bat" x64
     )
-    CALL mach build %MACH_CONFIG% --libsimpleservo2
+    C:\Python37\python.exe mach build %MACH_CONFIG% --libsimpleservo2
     IF %ERRORLEVEL% NEQ 0 EXIT /B %ERRORLEVEL%
     xcopy /f /y target\%CONFIG%\simpleservo2.h "%SERVO_UNITY_PATH%\src\ServoUnityPlugin"
     xcopy /f /y target\%CONFIG%\simpleservo2.dll.lib "%SERVO_UNITY_PATH%\src\ServoUnityPlugin\Windows"
     xcopy /f /y target\%CONFIG%\simpleservo2.dll "%SERVO_UNITY_PATH%\src\ServoUnity\Assets\Plugins\x64"
 ) ELSE (
-    C:\Python27\python.exe mach build %MACH_CONFIG% --uwp --win-arm64
+    C:\Python37\python.exe mach build %MACH_CONFIG% --uwp --win-arm64
     IF %ERRORLEVEL% NEQ 0 EXIT /B %ERRORLEVEL%
     xcopy /f /y target\aarch64-uwp-windows-msvc\%CONFIG%\simpleservo2.h "%SERVO_UNITY_PATH%\src\ServoUnityPlugin"
     xcopy /f /y target\aarch64-uwp-windows-msvc\%CONFIG%\simpleservo2.dll.lib "%SERVO_UNITY_PATH%\src\ServoUnityPlugin\Windows-UWP"

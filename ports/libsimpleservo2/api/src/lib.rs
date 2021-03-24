@@ -135,7 +135,7 @@ pub trait HostTrait {
     /// Servo finished shutting down.
     fn on_shutdown_complete(&self);
     /// A text input is focused.
-    fn on_ime_show(&self, input_type: InputMethodType, text: Option<(String, i32, bool)>, bounds: DeviceIntRect);
+    fn on_ime_show(&self, input_type: InputMethodType, text: Option<(String, i32)>, multiline: bool, bounds: DeviceIntRect);
     /// Input lost focus
     fn on_ime_hide(&self);
     /// Gets sytem clipboard contents.
