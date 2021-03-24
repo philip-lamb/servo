@@ -9,7 +9,7 @@
 %>
 
 <%def name="predefined_type(name, type, initial_value, parse_method='parse',
-            needs_context=True, vector=False,
+            vector=False,
             computed_type=None, initial_specified_value=None,
             allow_quirks='No', allow_empty=False, **kwargs)">
     <%def name="predefined_type_inner(name, type, initial_value, parse_method)">
@@ -45,10 +45,10 @@
         ) -> Result<SpecifiedValue, ParseError<'i>> {
             % if allow_quirks != "No":
             specified::${type}::${parse_method}_quirky(context, input, AllowQuirks::${allow_quirks})
-            % elif needs_context:
+            % elif parse_method != "parse":
             specified::${type}::${parse_method}(context, input)
             % else:
-            specified::${type}::${parse_method}(input)
+            <specified::${type} as crate::parser::Parse>::parse(context, input)
             % endif
         }
     </%def>
@@ -170,9 +170,6 @@
             /// Making this type generic allows the compiler to figure out the
             /// animated value for us, instead of having to implement it
             /// manually for every type we care about.
-            % if separator == "Comma":
-            #[css(comma)]
-            % endif
             #[derive(
                 Clone,
                 Debug,
@@ -182,6 +179,9 @@
                 ToResolvedValue,
                 ToCss,
             )]
+            % if separator == "Comma":
+            #[css(comma)]
+            % endif
             pub struct OwnedList<T>(
                 % if not allow_empty:
                 #[css(iterable)]
@@ -198,9 +198,6 @@
             % else:
             pub use self::ComputedList as List;
 
-            % if separator == "Comma":
-            #[css(comma)]
-            % endif
             #[derive(
                 Clone,
                 Debug,
@@ -208,6 +205,9 @@
                 PartialEq,
                 ToCss,
             )]
+            % if separator == "Comma":
+            #[css(comma)]
+            % endif
             pub struct ComputedList(
                 % if not allow_empty:
                 #[css(iterable)]
@@ -324,10 +324,10 @@
         }
 
         /// The specified value of ${name}.
+        #[derive(Clone, Debug, MallocSizeOf, PartialEq, SpecifiedValueInfo, ToCss, ToShmem)]
         % if separator == "Comma":
         #[css(comma)]
         % endif
-        #[derive(Clone, Debug, MallocSizeOf, PartialEq, SpecifiedValueInfo, ToCss, ToShmem)]
         pub struct SpecifiedValue(
             % if not allow_empty:
             #[css(iterable)]
@@ -948,7 +948,8 @@
             input.parse_entirely(|input| parse_value(context, input)).map(|longhands| {
                 % for sub_property in shorthand.sub_properties:
                 % if sub_property.may_be_disabled_in(shorthand, engine):
-                if NonCustomPropertyId::from(LonghandId::${sub_property.camel_case}).allowed_in(context) {
+                if NonCustomPropertyId::from(LonghandId::${sub_property.camel_case})
+                    .allowed_in_ignoring_rule_type(context) {
                 % endif
                     declarations.push(PropertyDeclaration::${sub_property.camel_case}(
                         longhands.${sub_property.ident}
@@ -971,25 +972,24 @@
     name,
     first_property,
     second_property,
-    parser_function,
-    needs_context=True,
+    parser_function='crate::parser::Parse::parse',
     **kwargs
 )">
 <%call expr="self.shorthand(name, sub_properties=' '.join([first_property, second_property]), **kwargs)">
     #[allow(unused_imports)]
     use crate::parser::Parse;
+    #[allow(unused_imports)]
     use crate::values::specified;
 
-    pub fn parse_value<'i, 't>(
+    fn parse_value<'i, 't>(
         context: &ParserContext,
         input: &mut Parser<'i, 't>,
     ) -> Result<Longhands, ParseError<'i>> {
-        let parse_one = |_c: &ParserContext, input: &mut Parser<'i, 't>| {
-            % if needs_context:
-            ${parser_function}(_c, input)
-            % else:
-            ${parser_function}(input)
-            % endif
+        let parse_one = |c: &ParserContext, input: &mut Parser<'i, 't>| -> Result<
+            crate::properties::longhands::${to_rust_ident(first_property)}::SpecifiedValue,
+            ParseError<'i>
+        > {
+            ${parser_function}(c, input)
         };
 
         let first = parse_one(context, input)?;
@@ -1017,26 +1017,29 @@
 </%call>
 </%def>
 
-<%def name="four_sides_shorthand(name, sub_property_pattern, parser_function,
-                                 needs_context=True, allow_quirks='No', **kwargs)">
+<%def name="four_sides_shorthand(name, sub_property_pattern,
+                                 parser_function='crate::parser::Parse::parse',
+                                 allow_quirks='No', **kwargs)">
     <% sub_properties=' '.join(sub_property_pattern % side for side in PHYSICAL_SIDES) %>
     <%call expr="self.shorthand(name, sub_properties=sub_properties, **kwargs)">
         #[allow(unused_imports)]
         use crate::parser::Parse;
         use crate::values::generics::rect::Rect;
+        #[allow(unused_imports)]
         use crate::values::specified;
 
-        pub fn parse_value<'i, 't>(
+        fn parse_value<'i, 't>(
             context: &ParserContext,
             input: &mut Parser<'i, 't>,
         ) -> Result<Longhands, ParseError<'i>> {
-            let rect = Rect::parse_with(context, input, |_c, i| {
+            let rect = Rect::parse_with(context, input, |c, i| -> Result<
+                crate::properties::longhands::${to_rust_ident(sub_property_pattern % "top")}::SpecifiedValue,
+                ParseError<'i>
+            > {
             % if allow_quirks != "No":
-                ${parser_function}_quirky(_c, i, specified::AllowQuirks::${allow_quirks})
-            % elif needs_context:
-                ${parser_function}(_c, i)
+                ${parser_function}_quirky(c, i, specified::AllowQuirks::${allow_quirks})
             % else:
-                ${parser_function}(i)
+                ${parser_function}(c, i)
             % endif
             })?;
             Ok(expanded! {

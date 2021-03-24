@@ -162,7 +162,7 @@ class PostBuildCommands(CommandBase):
                     command = rustCommand
 
             # Prepend the debugger args.
-            args = ([command] + self.debuggerInfo.args
+            args = ([command] + self.debuggerInfo.args + ["--"]
                     + args + params)
         else:
             args = args + params
@@ -243,7 +243,8 @@ class PostBuildCommands(CommandBase):
             media_stack=None, **kwargs):
         self.ensure_bootstrapped(rustup_components=["rust-docs"])
         rustc_path = check_output(
-            ["rustup" + BIN_SUFFIX, "which", "--toolchain", self.rust_toolchain(), "rustc"])
+            ["rustup" + BIN_SUFFIX, "which", "--toolchain", self.rust_toolchain(), "rustc"]
+        ).decode('utf-8')
         assert path.basename(path.dirname(rustc_path)) == "bin"
         toolchain_path = path.dirname(path.dirname(rustc_path))
         rust_docs = path.join(toolchain_path, "share", "doc", "rust", "html")

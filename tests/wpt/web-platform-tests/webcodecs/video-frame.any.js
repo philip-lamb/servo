@@ -311,7 +311,7 @@ test(t => {
   let yPlane = {src: yPlaneData, stride: 4, rows: 2};
   let uvPlaneData = new Uint8Array([1, 2, 3, 4]);
   let uvPlane = {src: uvPlaneData, stride: 4, rows: 1};
-  frame = new VideoFrame(fmt, [yPlane, uvPlane], vfInit);
+  let frame = new VideoFrame(fmt, [yPlane, uvPlane], vfInit);
   assert_equals(frame.planes.length, 2, 'plane count');
   assert_equals(frame.format, fmt, 'plane format');
   verifyPlane(yPlane, frame.planes[0]);
@@ -368,7 +368,7 @@ test(t => {
   let argbPlaneData =
       new Uint8Array(new Uint32Array([1, 2, 3, 4, 5, 6, 7, 8]).buffer);
   let argbPlane = {src: argbPlaneData, stride: 4 * 4, rows: 2};
-  frame = new VideoFrame('ABGR', [argbPlane], vfInit);
+  let frame = new VideoFrame('ABGR', [argbPlane], vfInit);
   assert_equals(frame.planes.length, 1, 'plane count');
   assert_equals(frame.format, 'ABGR', 'plane format');
   verifyPlane(argbPlane, frame.planes[0]);
@@ -418,3 +418,39 @@ test(t => {
     }, fmt + ': plane size too small');
   });
 }, 'Test planar constructed RGB VideoFrames');
+
+test(t => {
+  let image = makeImageBitmap(32, 16);
+  let frame = new VideoFrame(image, {timestamp: 0});
+  assert_true(!!frame);
+
+  frame_copy = new VideoFrame(frame);
+  assert_equals(frame.format, frame_copy.format);
+  assert_equals(frame.timestamp, frame_copy.timestamp);
+  assert_equals(frame.codedWidth, frame_copy.codedWidth);
+  assert_equals(frame.codedHeight, frame_copy.codedHeight);
+  assert_equals(frame.displayWidth, frame_copy.displayWidth);
+  assert_equals(frame.displayHeight, frame_copy.displayHeight);
+  assert_equals(frame.duration, frame_copy.duration);
+  frame_copy.close();
+
+  frame_copy = new VideoFrame(frame, {duration: 1234});
+  assert_equals(frame.timestamp, frame_copy.timestamp);
+  assert_equals(frame_copy.duration, 1234);
+  frame_copy.close();
+
+  frame_copy = new VideoFrame(frame, {timestamp: 1234, duration: 456});
+  assert_equals(frame_copy.timestamp, 1234);
+  assert_equals(frame_copy.duration, 456);
+  frame_copy.close();
+
+  frame.close();
+}, 'Test VideoFrame constructed VideoFrame');
+
+test(t => {
+  let canvas = makeOffscreenCanvas(16, 16);
+  let frame = new VideoFrame(canvas);
+  assert_equals(frame.displayWidth, 16);
+  assert_equals(frame.displayHeight, 16);
+  frame.close();
+}, 'Test we can construct a VideoFrame from an offscreen canvas.');

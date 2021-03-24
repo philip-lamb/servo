@@ -621,7 +621,14 @@ install them, let us know by filing a bug!")
             extra_path += [path.join(self.msvc_package_dir("llvm"), "bin")]
             extra_path += [path.join(self.msvc_package_dir("ninja"), "bin")]
             extra_path += [self.msvc_package_dir("nuget")]
-            extra_path += [path.join(self.msvc_package_dir("xargo"))]
+
+            env.setdefault("CC", "clang-cl.exe")
+            env.setdefault("CXX", "clang-cl.exe")
+            if uwp:
+                env.setdefault("TARGET_CFLAGS", "")
+                env.setdefault("TARGET_CXXFLAGS", "")
+                env["TARGET_CFLAGS"] += " -DWINAPI_FAMILY=WINAPI_FAMILY_APP"
+                env["TARGET_CXXFLAGS"] += " -DWINAPI_FAMILY=WINAPI_FAMILY_APP"
 
             arch = (target or host_triple()).split('-')[0]
             vcpkg_arch = {
@@ -762,7 +769,7 @@ install them, let us know by filing a bug!")
                 # Shorten hash
                 # NOTE: Partially verifies the hash, but it will still pass if it's, e.g., a tree
                 git_sha = subprocess.check_output([
-                    'git', 'rev-parse', '--short', git_sha
+                    'git', 'rev-parse', '--short', git_sha.decode('ascii')
                 ])
             else:
                 # This is a regular commit
@@ -953,9 +960,8 @@ install them, let us know by filing a bug!")
         args += ["--features", " ".join(features)]
 
         if target and 'uwp' in target:
-            return call(["xargo", command] + args + cargo_args, env=env, verbose=verbose)
-        else:
-            return self.call_rustup_run(["cargo", command] + args + cargo_args, env=env, verbose=verbose)
+            cargo_args += ["-Z", "build-std"]
+        return self.call_rustup_run(["cargo", command] + args + cargo_args, env=env, verbose=verbose)
 
     def android_support_dir(self):
         return path.join(self.context.topdir, "support", "android")
@@ -1020,7 +1026,7 @@ install them, let us know by filing a bug!")
             toolchain = self.rust_toolchain()
 
             status = subprocess.call(
-                ["rustup", "run", toolchain.encode("utf-8"), "rustc", "--version"],
+                ["rustup", "run", toolchain, "rustc", "--version"],
                 stdout=open(os.devnull, "wb"),
                 stderr=subprocess.STDOUT,
             )
@@ -1049,7 +1055,12 @@ install them, let us know by filing a bug!")
 
     def ensure_rustup_version(self):
         try:
-            version_line = subprocess.check_output(["rustup" + BIN_SUFFIX, "--version"])
+            version_line = subprocess.check_output(
+                ["rustup" + BIN_SUFFIX, "--version"],
+                # Silence "info: This is the version for the rustup toolchain manager,
+                # not the rustc compiler."
+                stderr=open(os.devnull, "wb")
+            )
         except OSError as e:
             if e.errno == NO_SUCH_FILE_OR_DIRECTORY:
                 print("It looks like rustup is not installed. See instructions at "

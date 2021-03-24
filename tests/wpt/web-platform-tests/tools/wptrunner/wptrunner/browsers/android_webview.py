@@ -30,7 +30,9 @@ def browser_kwargs(logger, test_type, run_info_data, config, **kwargs):
     return {"binary": kwargs["binary"],
             "device_serial": kwargs["device_serial"],
             "webdriver_binary": kwargs["webdriver_binary"],
-            "webdriver_args": kwargs.get("webdriver_args")}
+            "webdriver_args": kwargs.get("webdriver_args"),
+            "stackparser_script": kwargs.get("stackparser_script"),
+            "output_directory": kwargs.get("output_directory")}
 
 
 def executor_kwargs(logger, test_type, server_config, cache_manager, run_info_data,
@@ -49,10 +51,11 @@ def executor_kwargs(logger, test_type, server_config, cache_manager, run_info_da
     # Note that for WebView, we launch a test shell and have the test shell use WebView.
     # https://chromium.googlesource.com/chromium/src/+/HEAD/android_webview/docs/webview-shell.md
     capabilities["goog:chromeOptions"]["androidPackage"] = \
-        "org.chromium.webview_shell"
-    capabilities["goog:chromeOptions"]["androidActivity"] = ".WebPlatformTestsActivity"
-    if kwargs.get('device_serial'):
-        capabilities["goog:chromeOptions"]["androidDeviceSerial"] = kwargs['device_serial']
+        kwargs.get("package_name", "org.chromium.webview_shell")
+    capabilities["goog:chromeOptions"]["androidActivity"] = \
+        "org.chromium.webview_shell.WebPlatformTestsActivity"
+    if kwargs.get("device_serial"):
+        capabilities["goog:chromeOptions"]["androidDeviceSerial"] = kwargs["device_serial"]
 
     # Workaround: driver.quit() cannot quit SystemWebViewShell.
     executor_kwargs["pause_after_test"] = False
@@ -79,10 +82,13 @@ class SystemWebViewShell(ChromeAndroidBrowserBase):
     def __init__(self, logger, binary, webdriver_binary="chromedriver",
                  remote_queue=None,
                  device_serial=None,
-                 webdriver_args=None):
+                 webdriver_args=None,
+                 stackparser_script=None,
+                 output_directory=None):
         """Creates a new representation of Chrome.  The `binary` argument gives
         the browser binary to use for testing."""
         super(SystemWebViewShell, self).__init__(logger,
-                webdriver_binary, remote_queue, device_serial, webdriver_args)
+                webdriver_binary, remote_queue, device_serial,
+                webdriver_args, stackparser_script, output_directory)
         self.binary = binary
         self.wptserver_ports = _wptserve_ports

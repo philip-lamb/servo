@@ -644,7 +644,7 @@ class PackageCommands(CommandBase):
                         break
                     sha256_digest.update(data)
             package_hash = sha256_digest.hexdigest()
-            package_hash_fileobj = io.BytesIO(package_hash)
+            package_hash_fileobj = io.BytesIO(package_hash.encode('utf-8'))
             latest_hash_upload_key = '{}/servo-latest.{}.sha256'.format(nightly_dir, extension)
 
             s3.upload_file(package, BUCKET, package_upload_key)
@@ -775,7 +775,11 @@ def setup_uwp_signing(ms_app_store, publisher):
 
     def run_powershell_cmd(cmd):
         try:
-            return subprocess.check_output(['powershell.exe', '-NoProfile', '-Command', cmd])
+            return (
+                subprocess
+                .check_output(['powershell.exe', '-NoProfile', '-Command', cmd])
+                .decode('utf-8')
+            )
         except subprocess.CalledProcessError:
             print("ERROR: PowerShell command failed: ", cmd)
             exit(1)
@@ -841,6 +845,7 @@ def build_uwp(platforms, dev, msbuild_dir, ms_app_store):
             .replace("%%PACKAGE_PLATFORMS%%", '|'.join(platforms))
             .replace("%%CONFIGURATION%%", Configuration)
             .replace("%%SOLUTION%%", path.join(os.getcwd(), 'support', 'hololens', 'ServoApp.sln'))
+            .encode('utf-8')
         )
         build_file.close()
         # Generate an appxbundle.

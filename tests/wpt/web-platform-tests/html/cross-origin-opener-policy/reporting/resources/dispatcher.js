@@ -10,22 +10,45 @@ const dispatcher_path =
     '/html/cross-origin-opener-policy/reporting/resources/dispatcher.py';
 const dispatcher_url = new URL(dispatcher_path, location.href).href;
 
-const send = function(uuid, message) {
-  fetch(dispatcher_url + `?uuid=${uuid}`, {
-    method: 'POST',
-    body: message
+// Return a promise, limiting the number of concurrent accesses to a shared
+// resources to |max_concurrent_access|.
+const concurrencyLimiter = (max_concurrency) => {
+  let pending = 0;
+  let waiting = [];
+  return async (task) => {
+    pending++;
+    if (pending > max_concurrency)
+      await new Promise(resolve => waiting.push(resolve));
+    await task();
+    pending--;
+    waiting.shift()?.();
+  };
+}
+
+// The official web-platform-test runner sometimes drop POST requests when
+// too many are requested in parallel. Limiting this document to send only one
+// at a time fixes the issue.
+const sendLimiter = concurrencyLimiter(1);
+
+const send = async function(uuid, message) {
+  await sendLimiter(async () => {
+    await fetch(dispatcher_url + `?uuid=${uuid}`, {
+      method: 'POST',
+      body: message
+    });
   });
 }
 
 const receive = async function(uuid, maybe_timeout) {
   const timeout = maybe_timeout || Infinity;
-  const retry_delay = 100;
-  for(let i = 0; i * retry_delay < timeout; ++i) {
+  let start = performance.now();
+  while(performance.now() - start < timeout) {
     let response = await fetch(dispatcher_url + `?uuid=${uuid}`);
     let data = await response.text();
     if (data != 'not ready')
       return data;
-    await new Promise(r => step_timeout(r, retry_delay));
+    // Save resources & spread the load:
+    await new Promise(r => setTimeout(r, 100*Math.random()));
   }
   return "timeout";
 }

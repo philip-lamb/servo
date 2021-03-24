@@ -49,7 +49,7 @@ WEB_PLATFORM_TESTS_PATH = os.path.join("tests", "wpt", "web-platform-tests")
 SERVO_TESTS_PATH = os.path.join("tests", "wpt", "mozilla", "tests")
 
 CLANGFMT_CPP_DIRS = ["support/hololens/"]
-CLANGFMT_VERSION = "9"
+CLANGFMT_VERSION = "11"
 
 TEST_SUITES = OrderedDict([
     ("tidy", {"kwargs": {"all_files": False, "no_progress": False, "self_test": False,
@@ -585,7 +585,10 @@ class MachCommands(CommandBase):
 
         def format(outputs, description, file=sys.stdout):
             formatted = "%s %s:\n%s" % (len(outputs), description, "\n".join(outputs))
-            file.write(formatted.encode("utf-8"))
+            if file == sys.stdout:
+                file.write(formatted)
+            else:
+                file.write(formatted.encode("utf-8"))
 
         if log_intermittents:
             with open(log_intermittents, "wb") as file:

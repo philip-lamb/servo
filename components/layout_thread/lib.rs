@@ -189,9 +189,6 @@ pub struct LayoutThread {
     /// The root of the flow tree.
     root_flow: RefCell<Option<FlowRef>>,
 
-    /// The document-specific shared lock used for author-origin stylesheets
-    document_shared_lock: Option<SharedRwLock>,
-
     /// A counter for epoch messages
     epoch: Cell<Epoch>,
 
@@ -509,6 +506,7 @@ impl LayoutThread {
 
         let device = Device::new(
             MediaType::screen(),
+            QuirksMode::NoQuirks,
             window_size.initial_viewport,
             window_size.device_pixel_ratio,
         );
@@ -543,7 +541,6 @@ impl LayoutThread {
             generation: Cell::new(0),
             outstanding_web_fonts: Arc::new(AtomicUsize::new(0)),
             root_flow: RefCell::new(None),
-            document_shared_lock: None,
             // Epoch starts at 1 because of the initial display list for epoch 0 that we send to WR
             epoch: Cell::new(Epoch(1)),
             viewport_size: Size2D::new(Au(0), Au(0)),
@@ -1261,7 +1258,6 @@ impl LayoutThread {
         // Calculate the actual viewport as per DEVICE-ADAPT § 6
         // If the entire flow tree is invalid, then it will be reflowed anyhow.
         let document_shared_lock = document.style_shared_lock();
-        self.document_shared_lock = Some(document_shared_lock.clone());
         let author_guard = document_shared_lock.read();
 
         let ua_stylesheets = &*UA_STYLESHEETS;
@@ -1272,7 +1268,12 @@ impl LayoutThread {
         };
 
         let had_used_viewport_units = self.stylist.device().used_viewport_units();
-        let device = Device::new(MediaType::screen(), initial_viewport, device_pixel_ratio);
+        let device = Device::new(
+            MediaType::screen(),
+            self.stylist.quirks_mode(),
+            initial_viewport,
+            device_pixel_ratio,
+        );
         let sheet_origins_affected_by_device_change = self.stylist.set_device(device, &guards);
 
         self.stylist

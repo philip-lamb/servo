@@ -15,10 +15,7 @@ except ImportError:
 
 import pytest
 
-here = os.path.dirname(__file__)
-root = os.path.abspath(os.path.join(here, "..", "..", ".."))
-sys.path.insert(0, root)
-
+here = os.path.abspath(os.path.dirname(__file__))
 from tools.wpt import utils, wpt
 
 
@@ -320,6 +317,7 @@ def test_tests_affected_idlharness(capsys, manifest_dir):
     assert ("webrtc-identity/idlharness.https.window.js\n" +
             "webrtc-insertable-streams/idlharness.https.window.js\n" +
             "webrtc-stats/idlharness.window.js\n" +
+            "webrtc-stats/supported-stats.html\n" +
             "webrtc/idlharness.https.window.js\n") == out
 
 

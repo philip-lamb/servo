@@ -141,9 +141,6 @@ pub struct IOCompositor<Window: WindowMethods + ?Sized> {
     /// the compositor.
     pub shutdown_state: ShutdownState,
 
-    /// Tracks the last composite time.
-    last_composite_time: u64,
-
     /// Tracks whether the zoom action has happened recently.
     zoom_action: bool,
 
@@ -320,7 +317,6 @@ impl<Window: WindowMethods + ?Sized> IOCompositor<Window> {
             frame_tree_id: FrameTreeId(0),
             constellation_chan: state.constellation_chan,
             time_profiler_chan: state.time_profiler_chan,
-            last_composite_time: 0,
             ready_to_save_state: ReadyState::Unknown,
             webrender: state.webrender,
             webrender_document: state.webrender_document,
@@ -839,7 +835,7 @@ impl<Window: WindowMethods + ?Sized> IOCompositor<Window> {
         }
     }
 
-    pub fn on_resize_window_event(&mut self) {
+    pub fn on_resize_window_event(&mut self) -> bool {
         debug!("compositor resize requested");
 
         let old_coords = self.embedder_coordinates;
@@ -851,11 +847,12 @@ impl<Window: WindowMethods + ?Sized> IOCompositor<Window> {
         }
 
         if self.embedder_coordinates.viewport == old_coords.viewport {
-            return;
+            return false;
         }
 
         self.send_window_size(WindowSizeType::Resize);
         self.composite_if_necessary(CompositingReason::Resize);
+        return true;
     }
 
     pub fn on_mouse_window_event_class(&mut self, mouse_window_event: MouseWindowEvent) {
@@ -1579,8 +1576,6 @@ impl<Window: WindowMethods + ?Sized> IOCompositor<Window> {
         if let Err(err) = self.webrender_surfman.present() {
             warn!("Failed to present surface: {:?}", err);
         }
-
-        self.last_composite_time = precise_time_ns();
 
         self.composition_request = CompositionRequest::NoCompositingNecessary;
 
