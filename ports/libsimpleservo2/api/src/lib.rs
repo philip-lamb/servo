@@ -67,6 +67,7 @@ pub struct InitOptions {
     pub gl_context_pointer: Option<*const c_void>,
     pub native_display_pointer: Option<*const c_void>,
     pub prefs: Option<HashMap<String, PrefValue>>,
+    pub user_agent: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -195,7 +196,6 @@ pub struct ServoGlue {
     // and exit if it is empty afterwards.
     browsers: Vec<BrowserId>,
     events: Vec<WindowEvent>,
-    current_url: Option<ServoUrl>,
     context_menu_sender: Option<IpcSender<ContextMenuResult>>,
     gfx: ServoGfx,
 }
@@ -364,7 +364,11 @@ pub fn init(
         gl: gl.clone(),
     });
 
-    let servo = Servo::new(embedder_callbacks, window_callbacks.clone(), None);
+    let servo = Servo::new(
+        embedder_callbacks,
+        window_callbacks.clone(),
+        init_opts.user_agent.clone(),
+    );
 
     SERVO.with(|s| {
         let mut servo_glue = ServoGlue {
@@ -374,7 +378,6 @@ pub fn init(
             browser_id: None,
             browsers: vec![],
             events: vec![],
-            current_url: Some(url.clone()),
             context_menu_sender: None,
             gfx,
         };
@@ -699,7 +702,6 @@ impl ServoGlue {
                     self.callbacks
                         .host_callbacks
                         .on_url_changed(entries[current].clone().to_string());
-                    self.current_url = Some(entries[current].clone());
                 },
                 EmbedderMsg::LoadStart => {
                     self.callbacks.host_callbacks.on_load_started();

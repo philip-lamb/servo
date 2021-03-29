@@ -244,6 +244,7 @@ pub struct CInitOptions {
     pub vslogger_mod_size: u32,
     pub native_widget: *mut c_void,
     pub prefs: *const prefs::CPrefList,
+    pub user_agent: *const c_char,
 }
 
 #[repr(C)]
@@ -461,6 +462,15 @@ unsafe fn init(
         Some((*opts.prefs).convert())
     };
 
+    let user_agent = if !opts.user_agent.is_null() {
+        CStr::from_ptr(opts.user_agent)
+            .to_str()
+            .ok()
+            .and_then(|s| Some(s.to_owned()))
+    } else {
+        None
+    };
+
     let opts = InitOptions {
         args,
         coordinates,
@@ -469,6 +479,7 @@ unsafe fn init(
         xr_discovery: None,
         gl_context_pointer: gl_context,
         native_display_pointer: display,
+        user_agent: user_agent,
     };
 
     let wakeup = Box::new(WakeupCallback::new(wakeup));

@@ -10,9 +10,9 @@ function usage {
     exit 1
 }
 
-if [ $# -eq 0 ]; then
-    usage
-fi
+#if [ $# -eq 0 ]; then
+#    usage
+#fi
 
 # -e = exit on errors
 set -e
