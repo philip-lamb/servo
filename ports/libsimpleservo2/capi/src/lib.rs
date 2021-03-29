@@ -18,8 +18,9 @@ use env_logger;
 use log::LevelFilter;
 use simpleservo2::{self, gl_glue, ServoGlue, SERVO};
 use simpleservo2::{
-    ContextMenuResult, Coordinates, DeviceIntRect, EventLoopWaker, HostTrait, InitOptions, Key,
-    InputMethodType, MediaSessionActionType, MediaSessionPlaybackState, MouseButton, PromptResult,
+    ContextMenuResult, Coordinates, DeviceIntRect, EventLoopWaker, HostTrait, InitOptions,
+    InputMethodType, Key, MediaSessionActionType, MediaSessionPlaybackState, MouseButton,
+    PromptResult,
 };
 use std::ffi::{CStr, CString};
 #[cfg(target_os = "windows")]
@@ -203,7 +204,15 @@ pub struct CHostCallbacks {
     pub on_history_changed: extern "C" fn(can_go_back: bool, can_go_forward: bool),
     pub on_animating_changed: extern "C" fn(animating: bool),
     pub on_shutdown_complete: extern "C" fn(),
-    pub on_ime_show: extern "C" fn(text: *const c_char, text_index: i32, multiline: bool, x: i32, y: i32, width: i32, height: i32),
+    pub on_ime_show: extern "C" fn(
+        text: *const c_char,
+        text_index: i32,
+        multiline: bool,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+    ),
     pub on_ime_hide: extern "C" fn(),
     pub get_clipboard_contents: extern "C" fn() -> *const c_char,
     pub set_clipboard_contents: extern "C" fn(contents: *const c_char),
@@ -215,11 +224,8 @@ pub struct CHostCallbacks {
     pub prompt_alert: extern "C" fn(message: *const c_char, trusted: bool),
     pub prompt_ok_cancel: extern "C" fn(message: *const c_char, trusted: bool) -> CPromptResult,
     pub prompt_yes_no: extern "C" fn(message: *const c_char, trusted: bool) -> CPromptResult,
-    pub prompt_input: extern "C" fn(
-        message: *const c_char,
-        def: *const c_char,
-        trusted: bool,
-    ) -> *const c_char,
+    pub prompt_input:
+        extern "C" fn(message: *const c_char, def: *const c_char, trusted: bool) -> *const c_char,
     pub on_devtools_started:
         extern "C" fn(result: CDevtoolsServerState, port: c_uint, token: *const c_char),
     pub show_context_menu:
@@ -463,7 +469,7 @@ unsafe fn init(
         xr_discovery: None,
         gl_context_pointer: gl_context,
         native_display_pointer: display,
-     };
+    };
 
     let wakeup = Box::new(WakeupCallback::new(wakeup));
     let callbacks = Box::new(HostCallbacks::new(callbacks));
@@ -491,7 +497,11 @@ pub extern "C" fn init_with_egl(
     }
 }
 
-#[cfg(any(target_os = "linux", all(target_os = "windows", not(feature = "no-wgl")), target_os = "macos"))]
+#[cfg(any(
+    target_os = "linux",
+    all(target_os = "windows", not(feature = "no-wgl")),
+    target_os = "macos"
+))]
 #[no_mangle]
 pub extern "C" fn init_with_gl(
     opts: CInitOptions,
@@ -769,10 +779,7 @@ fn ckeytype_to_key(key_code: char, key_type: CKeyType) -> Key {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn key_down(
-    key_code: u32,
-    key_type: CKeyType,
-) {
+pub unsafe extern "C" fn key_down(key_code: u32, key_type: CKeyType) {
     let key = ckeytype_to_key(key_code as u8 as char, key_type);
     if key == Key::Unidentified {
         return;
@@ -781,10 +788,7 @@ pub unsafe extern "C" fn key_down(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn key_up(
-    key_code: u32,
-    key_type: CKeyType,
-) {
+pub unsafe extern "C" fn key_up(key_code: u32, key_type: CKeyType) {
     let key = ckeytype_to_key(key_code as u8 as char, key_type);
     if key == Key::Unidentified {
         return;

@@ -1123,9 +1123,21 @@ impl Document {
                     Size2D::new(rect.size.width.to_px(), rect.size.height.to_px()),
                 );
                 let (text, multiline) = if let Some(input) = elem.downcast::<HTMLInputElement>() {
-                    (Some(((&input.Value()).to_string(), input.GetSelectionEnd().unwrap_or(0) as i32)), false)
+                    (
+                        Some((
+                            (&input.Value()).to_string(),
+                            input.GetSelectionEnd().unwrap_or(0) as i32,
+                        )),
+                        false,
+                    )
                 } else if let Some(textarea) = elem.downcast::<HTMLTextAreaElement>() {
-                    (Some(((&textarea.Value()).to_string(), textarea.GetSelectionEnd().unwrap_or(0) as i32)), true)
+                    (
+                        Some((
+                            (&textarea.Value()).to_string(),
+                            textarea.GetSelectionEnd().unwrap_or(0) as i32,
+                        )),
+                        true,
+                    )
                 } else {
                     (None, false)
                 };

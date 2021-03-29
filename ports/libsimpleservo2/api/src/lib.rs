@@ -11,10 +11,10 @@ pub use servo::config::prefs::{add_user_prefs, PrefValue};
 pub use servo::embedder_traits::{
     ContextMenuResult, MediaSessionPlaybackState, PermissionPrompt, PermissionRequest, PromptResult,
 };
+pub use servo::keyboard_types::Key;
 pub use servo::msg::constellation_msg::InputMethodType;
 pub use servo::script_traits::{MediaSessionActionType, MouseButton};
 pub use servo::webrender_api::units::DeviceIntRect;
-pub use servo::keyboard_types::{Key};
 
 use getopts::Options;
 use ipc_channel::ipc::IpcSender;
@@ -135,7 +135,13 @@ pub trait HostTrait {
     /// Servo finished shutting down.
     fn on_shutdown_complete(&self);
     /// A text input is focused.
-    fn on_ime_show(&self, input_type: InputMethodType, text: Option<(String, i32)>, multiline: bool, bounds: DeviceIntRect);
+    fn on_ime_show(
+        &self,
+        input_type: InputMethodType,
+        text: Option<(String, i32)>,
+        multiline: bool,
+        bounds: DeviceIntRect,
+    );
     /// Input lost focus
     fn on_ime_hide(&self);
     /// Gets sytem clipboard contents.
@@ -164,12 +170,14 @@ struct ServoGfx {
 
 impl Drop for ServoGfx {
     fn drop(&mut self) {
-        let _ = self.device.make_context_current(&self.context.as_mut().unwrap());
+        let _ = self
+            .device
+            .make_context_current(&self.context.as_mut().unwrap());
         self.gl.delete_framebuffers(&[self.read_fbo, self.draw_fbo]);
         // We bootstrapped from a pre-existing context to get self.context,
         // so we shouldn't destroy it by calling device.destroy_context,
         // but instead leave that to the embedder who created it.
-        let c  = self.context.take().unwrap();
+        let c = self.context.take().unwrap();
         mem::forget(c);
     }
 }
@@ -189,7 +197,7 @@ pub struct ServoGlue {
     events: Vec<WindowEvent>,
     current_url: Option<ServoUrl>,
     context_menu_sender: Option<IpcSender<ContextMenuResult>>,
-    gfx: ServoGfx
+    gfx: ServoGfx,
 }
 
 pub fn servo_version() -> String {
@@ -853,17 +861,30 @@ impl ServoGlue {
         Ok(())
     }
 
-    pub fn fill_gl_texture(&mut self, tex_id: u32, tex_width: i32, tex_height: i32) -> Result<bool, &'static str> {
+    pub fn fill_gl_texture(
+        &mut self,
+        tex_id: u32,
+        tex_width: i32,
+        tex_height: i32,
+    ) -> Result<bool, &'static str> {
         debug!("Filling texture {} {}x{}", tex_id, tex_width, tex_height);
 
-        self.gfx.device
+        self.gfx
+            .device
             .make_context_current(&self.gfx.context.as_mut().unwrap())
             .expect("Failed to make surfman context current");
         debug_assert_eq!(self.gfx.gl.get_error(), gl::NO_ERROR);
 
-        if let Some(surface) = self.callbacks.webrender_surfman.swap_chain().unwrap().take_pending_surface() {
+        if let Some(surface) = self
+            .callbacks
+            .webrender_surfman
+            .swap_chain()
+            .unwrap()
+            .take_pending_surface()
+        {
             let tex_size = Size2D::new(tex_width, tex_height);
-            let surface_size = Size2D::from_untyped(self.callbacks.webrender_surfman.surface_info(&surface).size);
+            let surface_size =
+                Size2D::from_untyped(self.callbacks.webrender_surfman.surface_info(&surface).size);
             if tex_size != surface_size {
                 // If we're being asked to fill frames that are a different size than servo is providing,
                 // ask it to change size.
@@ -872,19 +893,28 @@ impl ServoGlue {
 
             if tex_size.width <= 0 || tex_size.height <= 0 {
                 error!("Surface is zero-sized");
-                self.callbacks.webrender_surfman
-                    .swap_chain().unwrap().recycle_surface(surface);
+                self.callbacks
+                    .webrender_surfman
+                    .swap_chain()
+                    .unwrap()
+                    .recycle_surface(surface);
                 return Err("Surface is zero-sized");
             }
 
             // Save the current GL state
             let mut bound_fbos = [0, 0];
             unsafe {
-                self.gfx.gl.get_integer_v(gl::DRAW_FRAMEBUFFER_BINDING, &mut bound_fbos[0..]);
-                self.gfx.gl.get_integer_v(gl::READ_FRAMEBUFFER_BINDING, &mut bound_fbos[1..]);
+                self.gfx
+                    .gl
+                    .get_integer_v(gl::DRAW_FRAMEBUFFER_BINDING, &mut bound_fbos[0..]);
+                self.gfx
+                    .gl
+                    .get_integer_v(gl::READ_FRAMEBUFFER_BINDING, &mut bound_fbos[1..]);
             }
 
-            self.gfx.gl.bind_framebuffer(gl::FRAMEBUFFER, self.gfx.draw_fbo);
+            self.gfx
+                .gl
+                .bind_framebuffer(gl::FRAMEBUFFER, self.gfx.draw_fbo);
             self.gfx.gl.framebuffer_texture_2d(
                 gl::FRAMEBUFFER,
                 gl::COLOR_ATTACHMENT0,
@@ -902,13 +932,17 @@ impl ServoGlue {
 
             // Create a SurfaceTexture, which binds the surface to a texture on the current
             // thread and GL context, then bind that texture as the source for a framebuffer read.
-            let surface_texture = self.gfx.device
+            let surface_texture = self
+                .gfx
+                .device
                 .create_surface_texture(&mut self.gfx.context.as_mut().unwrap(), surface)
                 .unwrap();
             let read_texture_id = self.gfx.device.surface_texture_object(&surface_texture);
             let read_texture_target = self.gfx.device.surface_gl_texture_target();
 
-            self.gfx.gl.bind_framebuffer(gl::READ_FRAMEBUFFER, self.gfx.read_fbo);
+            self.gfx
+                .gl
+                .bind_framebuffer(gl::READ_FRAMEBUFFER, self.gfx.read_fbo);
             self.gfx.gl.framebuffer_texture_2d(
                 gl::READ_FRAMEBUFFER,
                 gl::COLOR_ATTACHMENT0,
@@ -952,17 +986,26 @@ impl ServoGlue {
             // Do we need to do a self.gfx.gl.finish() here instead?
             self.gfx.gl.flush();
 
-            let surface = self.gfx.device
+            let surface = self
+                .gfx
+                .device
                 .destroy_surface_texture(&mut self.gfx.context.as_mut().unwrap(), surface_texture)
                 .unwrap();
 
             // Restore the GL state
-            self.gfx.gl.bind_framebuffer(gl::DRAW_FRAMEBUFFER, bound_fbos[0] as gl::GLuint);
-            self.gfx.gl.bind_framebuffer(gl::READ_FRAMEBUFFER, bound_fbos[1] as gl::GLuint);
+            self.gfx
+                .gl
+                .bind_framebuffer(gl::DRAW_FRAMEBUFFER, bound_fbos[0] as gl::GLuint);
+            self.gfx
+                .gl
+                .bind_framebuffer(gl::READ_FRAMEBUFFER, bound_fbos[1] as gl::GLuint);
             debug_assert_eq!(self.gfx.gl.get_error(), gl::NO_ERROR);
 
-            self.callbacks.webrender_surfman
-                .swap_chain().unwrap().recycle_surface(surface);
+            self.callbacks
+                .webrender_surfman
+                .swap_chain()
+                .unwrap()
+                .recycle_surface(surface);
             Ok(true)
         } else {
             debug!("fill_gl_texture: no surface pendng.");
