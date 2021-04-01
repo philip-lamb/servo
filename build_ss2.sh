@@ -6,7 +6,7 @@ OURDIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 CONFIG=release
 
 function usage {
-    echo "Usage: $(basename $0) [-|--help] [--debug]"
+    echo "Usage: $(basename $0) [-|--help] [--debug] [--install-unity-editor-dependencies]"
     exit 1
 }
 
@@ -134,5 +134,5 @@ if [ $INSTALL_UNITY_EDITOR_DEPS ] ; then
     libgstosxaudio.dylib \
     libgstosxvideo.dylib \
     libgstnice.dylib \
-    /Applications/Unity/Hub/Editor/2020.2.0f1/Unity.app/Contents/MacOS)
+    /Applications/Unity/Hub/Editor/2020.3.2f1/Unity.app/Contents/MacOS)
 fi
