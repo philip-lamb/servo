@@ -352,9 +352,9 @@ fn test_request_and_response_message_from_devtool_without_pipeline_id() {
     let (devtools_chan, devtools_port) = unbounded();
     let response = fetch(&mut request, Some(devtools_chan));
     assert!(response
-        .internal_response
-        .unwrap()
+        .actual_response()
         .status
+        .as_ref()
         .unwrap()
         .0
         .is_success());
@@ -821,9 +821,9 @@ fn test_when_cookie_received_marked_secure_is_ignored_for_http() {
     let _ = server.close();
 
     assert!(response
-        .internal_response
-        .unwrap()
+        .actual_response()
         .status
+        .as_ref()
         .unwrap()
         .0
         .is_success());
