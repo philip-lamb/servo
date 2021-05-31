@@ -839,7 +839,7 @@ dependencies = [
  "gleam 0.12.1",
  "image",
  "ipc-channel",
- "keyboard-types",
+ "keyboard-types 0.5.0",
  "libc",
  "log",
  "msg",
@@ -890,7 +890,7 @@ dependencies = [
  "gfx_traits",
  "http 0.1.21",
  "ipc-channel",
- "keyboard-types",
+ "keyboard-types 0.5.0",
  "layout_traits",
  "log",
  "media",
@@ -1544,7 +1544,7 @@ version = "0.0.1"
 dependencies = [
  "crossbeam-channel 0.4.4",
  "ipc-channel",
- "keyboard-types",
+ "keyboard-types 0.5.0",
  "lazy_static",
  "log",
  "msg",
@@ -3043,6 +3043,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "keyboard-types"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f859a810769edc2cf811479b9a3773eb981ed2f22f3ac902a34bba0d5d02d39"
+dependencies = [
+ "bitflags",
+ "serde",
+ "unicode-segmentation",
+]
+
+[[package]]
 name = "khronos_api"
 version = "3.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3354,7 +3365,7 @@ dependencies = [
  "gleam 0.12.1",
  "gstreamer",
  "ipc-channel",
- "keyboard-types",
+ "keyboard-types 0.5.0",
  "layout_thread_2013",
  "layout_thread_2020",
  "log",
@@ -3518,7 +3529,7 @@ dependencies = [
  "hashglobe",
  "hyper",
  "hyper_serde",
- "keyboard-types",
+ "keyboard-types 0.5.0",
  "selectors",
  "serde",
  "serde_bytes",
@@ -5138,7 +5149,7 @@ dependencies = [
  "ipc-channel",
  "itertools",
  "jstraceable_derive",
- "keyboard-types",
+ "keyboard-types 0.5.0",
  "lazy_static",
  "libc",
  "log",
@@ -5247,7 +5258,7 @@ name = "script_tests"
 version = "0.0.1"
 dependencies = [
  "euclid",
- "keyboard-types",
+ "keyboard-types 0.6.0",
  "script",
  "servo_url",
 ]
@@ -5269,7 +5280,7 @@ dependencies = [
  "hyper",
  "hyper_serde",
  "ipc-channel",
- "keyboard-types",
+ "keyboard-types 0.5.0",
  "libc",
  "log",
  "malloc_size_of",
@@ -5410,7 +5421,7 @@ dependencies = [
  "euclid",
  "getopts",
  "image",
- "keyboard-types",
+ "keyboard-types 0.6.0",
  "lazy_static",
  "libc",
  "libservo",
@@ -5865,7 +5876,7 @@ dependencies = [
  "backtrace",
  "cbindgen",
  "env_logger 0.8.2",
- "keyboard-types",
+ "keyboard-types 0.6.0",
  "lazy_static",
  "libc",
  "log",
@@ -5881,7 +5892,7 @@ dependencies = [
  "backtrace",
  "cbindgen",
  "env_logger 0.8.2",
- "keyboard-types",
+ "keyboard-types 0.6.0",
  "lazy_static",
  "libc",
  "log",
@@ -7133,7 +7144,7 @@ dependencies = [
  "hyper",
  "image",
  "ipc-channel",
- "keyboard-types",
+ "keyboard-types 0.5.0",
  "log",
  "msg",
  "net_traits",
