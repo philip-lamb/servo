@@ -170,15 +170,25 @@ mod media_platform {
 
     #[cfg(any(windows, target_os = "macos"))]
     pub fn init() {
-        // UWP apps have the working directory set appropriately. Win32 apps
-        // do not and need some assistance finding the DLLs.
-        let plugin_dir = if cfg!(feature = "uwp") {
-            std::path::PathBuf::new()
+        // Allow overriding  of plugin path via env var.
+        let plugin_dir = if let Ok(value) = std::env::var("GST_PLUGIN_PATH") {
+            std::path::PathBuf::from(value)
         } else {
-            let mut plugin_dir = std::env::current_exe().unwrap();
-            plugin_dir.pop();
-            plugin_dir
+            // UWP apps have the working directory set appropriately. Win32 apps
+            // do not and need some assistance finding the DLLs.
+            if cfg!(feature = "uwp") {
+                std::path::PathBuf::new()
+            } else {
+                // Prefer the path of the folder containing the current module,
+                // or if that's not available the folder containing the currrent
+                // executable.
+                let mut file_path = process_path::get_dylib_path()
+                    .unwrap_or_else(|| std::env::current_exe().unwrap());
+                file_path.pop();
+                file_path
+            }
         };
+        println!("GStreamer plugin dir: {:?}", plugin_dir);
 
         let backend = match GStreamerBackend::init_with_plugins(
             plugin_dir,
