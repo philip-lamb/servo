@@ -64,6 +64,7 @@ media = { path = "../media" }
 msg = { path = "../msg" }
 net = { path = "../net" }
 net_traits = { path = "../net_traits" }
+process_path = { git = "https://github.com/wesleywiser/process_path" }
 profile = { path = "../profile" }
 profile_traits = { path = "../profile_traits" }
 script = { path = "../script" }

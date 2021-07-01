@@ -3363,6 +3363,7 @@ dependencies = [
  "msg",
  "net",
  "net_traits",
+ "process_path",
  "profile",
  "profile_traits",
  "script",
@@ -4722,6 +4723,15 @@ name = "procedural-masquerade"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f1383dff4092fe903ac180e391a8d4121cc48f08ccf850614b0290c6673b69d"
+
+[[package]]
+name = "process_path"
+version = "0.1.4"
+source = "git+https://github.com/wesleywiser/process_path#33c2bdbd29d040674b82c1aa8e29e5c6941a1ea5"
+dependencies = [
+ "libc",
+ "winapi",
+]
 
 [[package]]
 name = "profile"
